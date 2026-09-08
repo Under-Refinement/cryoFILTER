@@ -1,0 +1,235 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Local Codex workspace helpers
+.claude/
+.codex
+.codex/
+.codex_tmp/
+.codex_release*_env/
+
+# Data files (too large for git)
+*.mrc
+*.mrcs
+*.cs
+*.csg
+*.star
+*.csv
+!examples/user_project/contamination_typing_manifest_example.csv
+*.npy
+*.pth
+*.zip
+
+# Model weights
+# Released model weights are distributed through Zenodo, not Git.
+*.pt
+pretrained_models/
+
+# Annotations (user-specific, can be large)
+*_annotations
+annotations_*
+
+# Model outputs
+models/trained/
+best_model.pth
+
+# Diagnostics and outputs
+.cryofilter_app/
+cryofilter_runs/
+annotation_exports/
+finetune*/
+fine_tune*/
+diagnostics/
+reference_movies/
+test_*.npy
+LATEST_MANIFEST.txt
+LATEST_RUN.txt
+_tmp_gui_screenshot_session_delete_me/
+
+# Environment
+.conda/
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+*.docx
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Logs
+*.log
+*.error
+*.output
+
+# Temporary files
+*.tmp
+*.bak
+
+# Internal models — legacy, experimental, or unused by inference/training
+models/diagnostics.py
+models/fp_penalized_metrics.py
+models/miffi_encoder.py
+models/multiclass_labels.py
+models/perceptual_loss.py
+models/physics_loss.py
+models/pretrain_simmim.py
+models/sam2_domain_classifier.py
+models/sam2_prompt_head.py
+models/train_regions.py
+models/train_stitched_regions.py
+models/uncertainty.py
+models/vit.py
+
+# Internal utils — not part of the public inference/training API
+utils/border_flood_fill.py
+utils/carbon_region_growing.py
+utils/cryoppp_io.py
+utils/cryosparc_dataset.py
+utils/data_augmentation.py
+utils/fft_bandpower.py
+utils/fft_covariance_refine.py
+utils/fourier_features.py
+utils/manifest_pixelsize.py
+utils/morphological_reconstruction.py
+utils/per_image_thresholding.py
+utils/plotting_utils.py
+utils/preprocessing_verification.py
+utils/prompt_utils.py
+utils/pytorch_compat.py
+utils/region_based_thresholding.py
+utils/region_completion.py
+utils/region_evaluation.py
+utils/region_weighting.py
+utils/sam2_wrapper.py
+utils/support_constraint.py
+utils/support_hole_segmentation.py
+utils/texture_filter.py
+
+# Public repo exclusions (internal research artifacts)
+benchmark/
+prismPYP_style_comparison/
+results_hub/
+final_results_manuscript_v3/
+final_results_manuscript_v4/
+final_results_manuscript_v5/
+testing_particle_filtering_with_crYOLO/
+
+# Local research artifacts (keep out of distributed repo)
+03_hybrid_masks_and_membrane_images/
+membrane_images_to_finetune_on_v1/
+ablation_studies/
+ablation_*.error
+ablation_*.output
+ablation_*.log
+ablation_BASELINE/
+ablation_FULL/
+ablation_NO_ATTENTION/
+ablation_NO_PSD/
+ablation_models/
+ablation_results/
+ablation_results_rawgt/
+figures/
+figures_rawgt/
+manuscript/
+manuscript_rawgt/
+methods_and_captions/
+slurm-*.out
+scripts/*
+!scripts/export_contamination_typing_session.py
+!scripts/gt_mask_editor_modern.py
+!scripts/launch_annotation_studio.py
+!scripts/launch_annotation_studio_modern.py
+!scripts/train_patch_based_fast.py
+scripts/analyze_probability_diagnostics.py
+testing_particle_filtering_with_crYOLO/scripts/common.py
+slurm/*
+
+# Large local release/training bundles kept outside GitHub history
+00_FINAL_RELEASE/
+01_FINAL_RELEASE_FREQ/
+02_5channel_PSD_RELEASE/
+02_FINAL_RELEASE_FREQ_HYBRIDMASKS/
+GT_Masks/
+GT_Masks_original/
+archive/
+archive_runs_nonfinal/
+benchmark/extras/
+benchmark/supp_figures/
+current_final_model
+current_final_model_weights
+external_tools/
+filtered_tmp/
+five_channel_psd_training_v1/
+logs/
+multi_frequency_fourier_training_selected_masks_v1/
+multi_frequency_fourier_training_v1/
+prismPYP_style_comparison/logs/
+prismPYP_style_comparison/reference_cs_files/
+prismPYP_style_comparison/reference_metadata/
+prismPYP_style_comparison/results/
+reference_papers/
+scratch_particle_filter_debug/
+scratch_particle_filter_gt_subset/
+slurm_logs/
+test_data_sets/
+
+# One-off local outputs and notes
+0.5860
+CLAUDE.md
+FINAL_MODEL.md
+/__init__.py
+!cryofilter/app/__init__.py
+!cryofilter/cryosparc/__init__.py
+!cryofilter/cryosparc/bridge/__init__.py
+!cryofilter/cryosparc/protocol/__init__.py
+!cryofilter/cryosparc/remote/__init__.py
+docs/gt_mask_choice_reviewer.md
+manifest_cleaned_final_gt_masks_selected.summary.json
+prismPYP_style_comparison/README.md
+prismPYP_style_comparison/image_details_README.md
+prismPYP_style_comparison/scripts/render_10532_typed_mask_overlay_svg.py
+tests/test_multifrequency_alternative_leftpanel_hybrids.py
+tests/test_prepare_v4_cv_datascale_manifests.py
+tests/test_v4_cv_eval_single_model.py
+tests/test_rank_ablation_probability_overlays.py
+processing/
+retrain_v2_probability_overlays_6panel_20260730/
+
+# Local/internal documentation and context
+context/
+docs/llm/
+docs/human/
+docs/cryosparc/IMPLEMENTATION_STATUS.md
+docs/screenshots/annotation_gui_contamination_labeling.png
+docs/ABLATION_STUDY.md
+docs/TRAINING_PROGRESS_V5.md
+BENCHMARKING.md
+README_bestconfig.md
+forLLM_README.md
+
+# One-time setup scripts (already executed)
+setup_git.sh
+activate_env.sh
+fix_qt.sh
+train_and_apply_model.sh

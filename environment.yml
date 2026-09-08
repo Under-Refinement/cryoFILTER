@@ -1,0 +1,29 @@
+name: cryofilter
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - pytorch=1.13.1=py3.10_cuda11.6_cudnn8.3.2_0  # CUDA version from pytorch channel
+  - torchvision=0.14.1=py310_cu116
+  - pytorch-cuda=11.6
+  - "numpy<2.0"  # PyTorch 1.13.1 requires NumPy < 2.0
+  - pandas
+  - scikit-learn
+  # Optional desktop annotation fallback; the browser app does not need Qt.
+  - pyside6>=6.5.0
+  - xcb-util-cursor
+  - xorg-libxcb
+  - libxkbcommon
+  - pip
+  - pip:
+    - mrcfile
+    - scikit-image
+    - scipy
+    - matplotlib
+    - tqdm
+    - pyyaml
+    - Pillow>=9.0.0
+    - pydantic>=2.0

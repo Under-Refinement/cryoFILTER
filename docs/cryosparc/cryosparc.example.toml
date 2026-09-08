@@ -1,0 +1,33 @@
+# Example cryoFILTER CryoSPARC integration config.
+# Copy this to your own config path and replace every placeholder for your site.
+# Do not store CryoSPARC or SSH passwords in this file.
+
+[cryosparc]
+# SSH target for a host that can see CryoSPARC project storage and reach the API.
+host = "user@worker.example.edu"
+
+[cryosparc.api]
+# CryoSPARC master/API endpoint, not necessarily the worker host.
+host = "cryosparc-master.example.edu"
+base_port = 39000
+email = "user@example.edu"
+
+[cryosparc.ssh]
+# Optional OpenSSH options. For example, point at a key or ControlMaster socket.
+options = ""
+
+[cryosparc.bridge]
+python = "/usr/bin/python3"
+command = "/shared/path/cryofilter_bridge_src/bin/cryofilter-bridge"
+remote_work_root = "/shared/path/cryofilter_bridge_work"
+remote_source_root = "/shared/path/cryofilter_bridge_src"
+# Leave unset for CryoSPARC Tools v5 token auth.
+# connection_file = "/path/to/instance-info.json"
+
+[cryosparc.transfer]
+method = "rsync"
+batch_micrographs = 64
+
+[local]
+run_root = "cryofilter_runs/cryosparc"
+model_cache = "pretrained_models"

@@ -1,0 +1,45 @@
+include README.md
+include LICENSE
+include environment.yml
+include cryoFILTER_OTF_repimage.png
+include cryoFILTER_gif_figs_upscaled_3s.gif
+
+include docs/fine_tuning.md
+include docs/app/LOCAL_WRAPPER.md
+include docs/cryosparc/REMOTE_INTEGRATION.md
+include docs/cryosparc/cryosparc.example.toml
+include docs/screenshots/cryoFILTER_app_wrapper.png
+recursive-include docs_for_expert_users *.md
+recursive-include cryofilter *.py *.json *.html *.css *.js
+recursive-include models *.py
+recursive-include utils *.py
+include scripts/gt_mask_editor_modern.py
+include scripts/launch_annotation_studio_modern.py
+include scripts/train_patch_based_fast.py
+include tests/test_annotation_manifest.py
+include tests/test_app_server.py
+include tests/test_batched_patch_psd_inference.py
+include tests/test_browser_annotation.py
+include tests/test_contamination_subtypes.py
+include tests/test_contamination_typing.py
+include tests/test_cryosparc_diagnostics.py
+include tests/test_cryosparc_prepare.py
+include tests/test_cryosparc_protocol.py
+include tests/test_cryosparc_transport.py
+include tests/test_frequency_band_checkpoint_config.py
+include tests/test_gui.py
+include tests/test_particle_filtering.py
+include tests/test_qc_render.py
+include tests/test_release_cli_policies.py
+include tests/test_star_import.py
+include tests/test_training.py
+include tests/test_training_manifest.py
+include tests/test_visualization.py
+
+exclude tests/test_multifrequency_alternative_leftpanel_hybrids.py
+exclude tests/test_prepare_v4_cv_datascale_manifests.py
+exclude tests/test_rank_ablation_probability_overlays.py
+exclude tests/test_v4_cv_eval_single_model.py
+
+global-exclude __pycache__
+global-exclude *.py[cod]

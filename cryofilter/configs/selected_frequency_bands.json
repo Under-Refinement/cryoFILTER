@@ -1,0 +1,32 @@
+{
+  "experiment": "multi_frequency_fourier_training_v1",
+  "target_pixel_size_angstrom_per_pixel": 2.0,
+  "adaptive_downsample_method": "fourier",
+  "normalization_method": "percentile_extra_wide",
+  "psd_source": "patch_local",
+  "psd_radial_normalization": true,
+  "selected_frequency_bands_angstrom_inv": [
+    [
+      0.03,
+      0.05
+    ],
+    [
+      0.09,
+      0.11
+    ],
+    [
+      0.14,
+      0.16
+    ],
+    [
+      0.22,
+      0.24
+    ]
+  ],
+  "include_anisotropy_channel": false,
+  "anisotropy_decision": "Not included. The 2 A balanced contamination-vs-clean probe did not provide strong enough additive evidence for a fifth streak/anisotropy channel.",
+  "provenance": {
+    "band_probe_checkpoint": "multi_frequency_fourier_training_v1/probe_2A_balanced_bins_checkpoint.json",
+    "selection_basis": "Top non-overlapping discriminative bands from contamination-vs-clean PSD probing in the corrected 2 A balanced regime."
+  }
+}

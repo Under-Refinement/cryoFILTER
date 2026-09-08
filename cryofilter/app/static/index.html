@@ -1,0 +1,330 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>cryoFILTER</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <div class="shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand-mark">cF</div>
+          <div>
+            <h1>cryoFILTER</h1>
+            <p id="workDir" title="Local app">Local app</p>
+          </div>
+        </div>
+        <nav class="tabs" aria-label="Workflow">
+          <button class="tab active" data-tab="cryosparc">
+            <svg class="tab-icon" viewBox="0 0 24 24" aria-hidden="true"><ellipse cx="12" cy="6" rx="8" ry="3" /><path d="M4 6v6c0 1.7 3.6 3 8 3s8 -1.3 8 -3v-6" /><path d="M4 12v6c0 1.7 3.6 3 8 3s8 -1.3 8 -3v-6" /></svg>
+            <span>CryoSPARC</span>
+          </button>
+          <button class="tab" data-tab="inference">
+            <svg class="tab-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 21l12 -12" /><path d="M15 6l3 3" /><path d="M9 3l1 3l3 1l-3 1l-1 3l-1 -3l-3 -1l3 -1z" /><path d="M19 14l.5 1.5l1.5 .5l-1.5 .5l-.5 1.5l-.5 -1.5l-1.5 -.5l1.5 -.5z" /></svg>
+            <span>Inference</span>
+          </button>
+          <button class="tab" data-tab="filter-picks">
+            <svg class="tab-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16" /><path d="M4 12h10" /><path d="M4 18h7" /><circle cx="18" cy="13" r="3" /><path d="M20.5 15.5l1.5 1.5" /></svg>
+            <span>Filter Picks</span>
+          </button>
+          <button class="tab" data-tab="monitor">
+            <svg class="tab-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h4l2 -6l4 12l2 -6h6" /></svg>
+            <span>Monitor</span>
+          </button>
+          <button class="tab" data-tab="annotation">
+            <svg class="tab-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 8c-2.2 .7 -4 2.1 -4 4c0 3.3 5.4 6 12 6c3.3 0 6 -1 6 -2.5c0 -1.7 -3.2 -2 -6 -2.5c-3.5 -.7 -6 -1.6 -6 -4c0 -2.2 2.2 -4 5 -4c2 0 3.6 .9 4.4 2.2" /><path d="M18 7l2 2l-2 2" /></svg>
+            <span>Annotation</span>
+          </button>
+          <button class="tab" data-tab="training">
+            <svg class="tab-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h10" /><path d="M18 6h2" /><path d="M6 12h2" /><path d="M12 12h8" /><path d="M4 18h7" /><path d="M15 18h5" /><circle cx="16" cy="6" r="2" /><circle cx="10" cy="12" r="2" /><circle cx="13" cy="18" r="2" /></svg>
+            <span>Fine-tune</span>
+          </button>
+        </nav>
+        <div class="live-indicator" id="liveIndicator" hidden>
+          <span class="live-dot" aria-hidden="true"></span>
+          <span id="liveRunName">No active run</span>
+        </div>
+      </aside>
+
+      <main class="main">
+        <section id="monitor" class="panel">
+          <div class="topbar">
+            <div>
+              <h2>Runs</h2>
+              <p id="statusLine">Starting...</p>
+            </div>
+            <div class="topbar-actions">
+              <button class="icon-button quiet" id="refreshButton" aria-label="Refresh runs" title="Refresh runs">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8.1 8.1 0 0 0 -15.5 -2m-.5 -4v4h4" /><path d="M4 13a8.1 8.1 0 0 0 15.5 2m.5 4v-4h-4" /></svg>
+              </button>
+              <button class="primary" id="launchRunButton" type="button">Launch run</button>
+            </div>
+          </div>
+          <div class="monitor-grid">
+            <div class="jobs-list" id="jobsList"></div>
+            <div class="details">
+              <div class="details-head">
+                <div>
+                  <h3 id="selectedTitle">No run selected</h3>
+                  <p id="selectedMeta">Launch a workflow to see live output.</p>
+                </div>
+                <button class="danger ghost" id="cancelButton" type="button" hidden>Cancel</button>
+              </div>
+              <div id="artifactGrid" class="artifact-grid" hidden></div>
+              <div id="metricsGrid" class="metrics-grid" hidden></div>
+              <pre id="jobLog" class="log" hidden></pre>
+            </div>
+          </div>
+        </section>
+
+        <section id="inference" class="panel">
+          <form class="form-grid" data-kind="infer">
+            <div class="section-title">
+              <h2>Inference</h2>
+              <button type="submit">Launch</button>
+            </div>
+            <label><span class="label-row">Micrographs <span class="help" tabindex="0" data-tip="Path to one .mrc file or a directory containing .mrc files. Use an absolute path when launching from another working directory.">?</span></span><input name="input" required placeholder="/path/to/micrographs" /></label>
+            <label><span class="label-row">Weights <span class="help" tabindex="0" data-tip="Path to the model checkpoint, usually cryoFILTER_FULL.pt. Leave blank only when pretrained_models/cryoFILTER_FULL.pt exists in this checkout.">?</span></span><input name="checkpoint" placeholder="pretrained_models/cryoFILTER_FULL.pt" /></label>
+            <label><span class="label-row">Output <span class="help" tabindex="0" data-tip="Directory where probability maps, masks, summaries, and OTF images will be written. Existing files are not removed.">?</span></span><input name="output_dir" placeholder="./cryofilter_output" /></label>
+            <label><span class="label-row">Particles <span class="help" tabindex="0" data-tip="Optional CryoSPARC .cs or RELION .star particle file. When supplied, cryoFILTER writes filtered particles and OTF diagnostic images.">?</span></span><input name="particle_file" placeholder="/path/to/particles.cs or .star" /></label>
+            <label><span class="label-row">Particle group <span class="help" tabindex="0" data-tip="Optional CryoSPARC .csg file paired with a .cs particle export. Use this when CryoSPARC split particle files are grouped by a .csg.">?</span></span><input name="particle_csg" placeholder="/path/to/particles.csg" /></label>
+            <label><span class="label-row">Device <span class="help" tabindex="0" data-tip="Compute device for inference. Use cuda on a GPU node; use cpu for smoke tests or machines without CUDA.">?</span></span><select name="device"><option>cuda</option><option>cpu</option></select></label>
+            <label><span class="label-row">CPUs <span class="help" tabindex="0" data-tip="Optional CPU thread count for preprocessing, PNG generation, and math libraries. Leave blank to use the server environment.">?</span></span><input name="num_cpus" type="number" min="1" placeholder="auto" /></label>
+            <label><span class="label-row">GPUs <span class="help" tabindex="0" data-tip="Optional number of CUDA devices to expose. Values above 1 enable DataParallel for batched inference.">?</span></span><input name="num_gpus" type="number" min="0" placeholder="auto" /></label>
+            <label><span class="label-row">Threshold <span class="help" tabindex="0" data-tip="Final mask threshold from 0 to 1. Higher values are more conservative; 0.6 is the validated default.">?</span></span><input name="threshold" type="number" step="0.01" value="0.6" /></label>
+            <label><span class="label-row">Profile <span class="help" tabindex="0" data-tip="Inference speed/quality preset. Balanced is the default; Fast is useful for quick checks; Quality enables the heavier high-quality recipe.">?</span></span><select name="inference_profile"><option>balanced</option><option>fast</option><option>quality</option></select></label>
+            <label><span class="label-row">Pixel size <span class="help" tabindex="0" data-tip="Optional pixel size override in Angstroms per pixel. Use this when the MRC header is missing or incorrect.">?</span></span><input name="pixel_size_angstrom" type="number" step="0.001" placeholder="A/px" /></label>
+            <label><span class="label-row">Extra args <span class="help" tabindex="0" data-tip="Advanced cryofilter infer flags, formatted exactly as command-line tokens, for example --batch-forward-size 32.">?</span></span><input name="extra_args" placeholder="--batch-forward-size 32" /></label>
+            <label class="check"><input name="recursive" type="checkbox" checked /><span class="label-row">Recursive <span class="help" tabindex="0" data-tip="Search for .mrc files below nested subdirectories instead of only the top-level input directory.">?</span></span></label>
+            <label class="check"><input name="skip_existing" type="checkbox" /><span class="label-row">Skip existing <span class="help" tabindex="0" data-tip="Resume an interrupted output directory by skipping micrographs whose expected output files are already present.">?</span></span></label>
+            <label class="check"><input name="render_overlays" type="checkbox" checked /><span class="label-row">OTF images <span class="help" tabindex="0" data-tip="Write per-micrograph on-the-fly diagnostic images showing the raw image, mask, particle decisions, and probability map.">?</span></span></label>
+          </form>
+        </section>
+
+        <section id="filter-picks" class="panel">
+          <form class="form-grid" data-kind="filter_particles">
+            <div class="section-title">
+              <h2>Filter Picks</h2>
+              <button type="submit">Launch</button>
+            </div>
+            <label><span class="label-row">Micrographs <span class="help" tabindex="0" data-tip="Original .mrc file or directory used to create the masks. cryoFILTER uses these for pixel size and particle-name matching.">?</span></span><input name="input" required placeholder="/path/to/micrographs" /></label>
+            <label><span class="label-row">Masks <span class="help" tabindex="0" data-tip="Directory containing existing cryoFILTER masks named like <micrograph-stem>_mask.npy. This can be an earlier Inference output directory.">?</span></span><input name="mask_dir" required placeholder="./cryofilter_output" /></label>
+            <label><span class="label-row">Particles <span class="help" tabindex="0" data-tip="CryoSPARC .cs or RELION .star particle file to filter against the existing masks. The input file is never modified.">?</span></span><input name="particle_file" required placeholder="/path/to/particles.cs or .star" /></label>
+            <label><span class="label-row">Particle group <span class="help" tabindex="0" data-tip="Optional CryoSPARC .csg paired with a .cs export. Use this when particle metadata is split across grouped CryoSPARC files.">?</span></span><input name="particle_csg" placeholder="/path/to/particles.csg" /></label>
+            <label><span class="label-row">Output <span class="help" tabindex="0" data-tip="Directory for filtered particle outputs and particle_filter_summary.json. Defaults to the mask directory.">?</span></span><input name="output_dir" placeholder="./cryofilter_output" /></label>
+            <label><span class="label-row">Filtered file <span class="help" tabindex="0" data-tip="Optional exact output filename for the filtered .cs or .star file. Leave blank for <particle-stem>_cryofiltered.">?</span></span><input name="filtered_particle_file" placeholder="/path/to/particles_cryofiltered.cs" /></label>
+            <label><span class="label-row">Exclusion <span class="help" tabindex="0" data-tip="Reject particles at or within this distance from the contamination mask, in Angstroms.">?</span></span><input name="particle_exclusion_distance_angstrom" type="number" step="1" value="100" /></label>
+            <label><span class="label-row">Pixel size <span class="help" tabindex="0" data-tip="Optional Angstrom-per-pixel override. Use this when the source MRC headers are missing or incorrect.">?</span></span><input name="pixel_size_angstrom" type="number" step="0.001" placeholder="A/px" /></label>
+            <label><span class="label-row">Summary file <span class="help" tabindex="0" data-tip="Optional JSON summary path. Leave blank for particle_filter_summary.json in the output directory.">?</span></span><input name="summary_file" placeholder="./particle_filter_summary.json" /></label>
+            <label class="check"><input name="recursive" type="checkbox" checked /><span class="label-row">Recursive <span class="help" tabindex="0" data-tip="Search for .mrc files below nested subdirectories instead of only the top-level input directory.">?</span></span></label>
+            <label class="check"><input name="allow_unmatched_particles" type="checkbox" /><span class="label-row">Allow unmatched <span class="help" tabindex="0" data-tip="Preserve particles whose micrograph names do not match the supplied micrographs. Keep off for strict validation.">?</span></span></label>
+            <label class="check"><input name="overwrite_filtered_particles" type="checkbox" /><span class="label-row">Overwrite <span class="help" tabindex="0" data-tip="Replace existing filtered particle outputs. The original input particle file is still never overwritten.">?</span></span></label>
+          </form>
+        </section>
+
+        <section id="cryosparc" class="panel active">
+          <div id="cryosparcGate" class="cryosparc-gate is-locked">
+            <div class="cryosparc-run-area">
+              <form id="cryosparcRunForm" class="form-grid" data-kind="cryosparc_predict" aria-hidden="true">
+                <input name="cryosparc_base_url" type="hidden" />
+                <input name="cryosparc_email" type="hidden" />
+                <input name="cryosparc_password" type="hidden" />
+                <div class="section-title">
+                  <div>
+                    <h2>CryoSPARC</h2>
+                    <p id="cryosparcConnectionSummary">Not connected</p>
+                  </div>
+                  <div class="section-actions">
+                    <button class="quiet" type="button" data-action="change-cryosparc">Change</button>
+                    <button type="submit">Launch</button>
+                  </div>
+                </div>
+                <label><span class="label-row">Project <span class="help" tabindex="0" data-tip="CryoSPARC project UID, formatted like P1. This is the project containing the source micrographs and particles.">?</span></span><input name="project" required placeholder="P1" /></label>
+                <label><span class="label-row">Workspace <span class="help" tabindex="0" data-tip="CryoSPARC workspace UID, formatted like W5. The External Job card will be created here.">?</span></span><input name="workspace" required placeholder="W2" /></label>
+                <label><span class="label-row">Micrographs <span class="help" tabindex="0" data-tip="CryoSPARC micrograph output reference. J54 is accepted and becomes J54:micrographs; use J54:output_name for nonstandard output names.">?</span></span><input name="micrographs" required placeholder="J54 or J54:micrographs" /></label>
+                <label><span class="label-row">Particles <span class="help" tabindex="0" data-tip="CryoSPARC particle output reference. J56 is accepted and becomes J56:particles; accepted and rejected outputs are written back from this source.">?</span></span><input name="particles" required placeholder="J56 or J56:particles" /></label>
+                <label><span class="label-row">Weights <span class="help" tabindex="0" data-tip="Path to the cryoFILTER checkpoint visible to the machine running this wrapper.">?</span></span><input name="checkpoint" placeholder="/path/to/cryoFILTER_FULL.pt" /></label>
+                <label><span class="label-row">Device <span class="help" tabindex="0" data-tip="Device passed through to local cryoFILTER inference after CryoSPARC staging. Use cuda on a GPU node.">?</span></span><select name="device"><option>cuda</option><option>cpu</option></select></label>
+                <details class="advanced">
+                  <summary>Advanced</summary>
+                  <div class="advanced-grid">
+                    <label><span class="label-row">Config <span class="help" tabindex="0" data-tip="Optional cryosparc.toml path for site-specific defaults.">?</span></span><input name="config" placeholder="/path/to/cryosparc.toml" /></label>
+                    <label><span class="label-row">Run name <span class="help" tabindex="0" data-tip="Title prefix for the CryoSPARC External Job card.">?</span></span><input name="title" value="cryoFILTER prediction" /></label>
+                    <label><span class="label-row">Output root <span class="help" tabindex="0" data-tip="Local directory for staged inputs, inference outputs, typing summaries, diagnostics, and manifests.">?</span></span><input name="local_run_root" placeholder="./cryofilter_runs/cryosparc" /></label>
+                    <label><span class="label-row">Limit <span class="help" tabindex="0" data-tip="Optional maximum number of micrographs to stage. Useful for smoke tests before running a full workspace output.">?</span></span><input name="limit_micrographs" type="number" min="1" placeholder="optional" /></label>
+                    <label><span class="label-row">Transfer GB <span class="help" tabindex="0" data-tip="Safety cap for staged micrograph transfer size. The run aborts before pulling if the staged input is larger than this value.">?</span></span><input name="max_transfer_gb" type="number" step="1" value="25" /></label>
+                    <label><span class="label-row">Threshold <span class="help" tabindex="0" data-tip="Final mask threshold from 0 to 1. Higher values are more conservative; 0.6 is the validated default.">?</span></span><input name="threshold" type="number" step="0.01" value="0.6" /></label>
+                    <label><span class="label-row">Profile <span class="help" tabindex="0" data-tip="Inference preset passed to cryoFILTER. Balanced is the validated default; Fast is available for quick checks; Quality is slower.">?</span></span><select name="inference_profile"><option>balanced</option><option>fast</option><option>quality</option></select></label>
+                    <label><span class="label-row">Batch <span class="help" tabindex="0" data-tip="Optional batch-forward size for GPU inference. Leave blank for cryoFILTER auto-selection.">?</span></span><input name="batch_forward_size" type="number" placeholder="auto" /></label>
+                    <label><span class="label-row">CPUs <span class="help" tabindex="0" data-tip="Optional CPU thread count for preprocessing, PNG generation, and typing subprocesses. Leave blank to use the server environment.">?</span></span><input name="num_cpus" type="number" min="1" placeholder="auto" /></label>
+                    <label><span class="label-row">GPUs <span class="help" tabindex="0" data-tip="Optional number of CUDA devices to expose to local inference. Values above 1 enable DataParallel for batched inference when PyTorch can see multiple GPUs.">?</span></span><input name="num_gpus" type="number" min="0" placeholder="auto" /></label>
+                    <label><span class="label-row">Typing summary <span class="help" tabindex="0" data-tip="Optional existing contamination typing summary.json. If supplied, the run uses it for diagnostics instead of launching typing.">?</span></span><input name="typing_summary" placeholder="/path/to/typing/summary.json" /></label>
+                    <label><span class="label-row">Bridge mode <span class="help" tabindex="0" data-tip="Where the CryoSPARC adapter runs. Local is correct when this app is running on the processing server; advanced users may enter user@worker.example.edu.">?</span></span><input name="bridge_host" value="local" placeholder="local or user@worker.example.edu" /></label>
+                    <label><span class="label-row">Bridge command <span class="help" tabindex="0" data-tip="Optional override for the cryofilter-bridge executable. Leave blank to run the bundled Python bridge module locally.">?</span></span><input name="bridge_command" placeholder="/path/to/cryofilter-bridge" /></label>
+                    <label><span class="label-row">Bridge work root <span class="help" tabindex="0" data-tip="Writable staging directory visible to the bridge host. Leave blank to use the configured/default bridge work directory.">?</span></span><input name="remote_work_root" placeholder="/path/to/cryofilter_bridge_work" /></label>
+                    <label><span class="label-row">Bridge source root <span class="help" tabindex="0" data-tip="Directory containing deployed bridge source for advanced remote setups.">?</span></span><input name="remote_source_root" placeholder="/path/to/cryofilter_bridge_src" /></label>
+                    <label><span class="label-row">Master host <span class="help" tabindex="0" data-tip="Advanced override for CryoSPARC master/API host. Prefer Instance URL unless your site needs split host/port values.">?</span></span><input name="cryosparc_host" placeholder="cryosparc-master.example.edu" /></label>
+                    <label><span class="label-row">Base port <span class="help" tabindex="0" data-tip="Advanced override for CryoSPARC base port, commonly 39000. Prefer Instance URL for normal use.">?</span></span><input name="cryosparc_base_port" type="number" placeholder="39000" /></label>
+                    <label><span class="label-row">SSH options <span class="help" tabindex="0" data-tip="Only used when Bridge mode is a remote host. Enter options as command-line tokens, for example -J user@login.example.edu.">?</span></span><input name="ssh_options" placeholder="-J user@login.example.edu" /></label>
+                    <label class="check"><input name="run_typing" type="checkbox" checked /><span class="label-row">Run typing <span class="help" tabindex="0" data-tip="Run contamination type classification after inference and include type pie/bar charts on the CryoSPARC card.">?</span></span></label>
+                  </div>
+                </details>
+              </form>
+            </div>
+            <form id="cryosparcConnectForm" class="credential-card" autocomplete="on">
+              <div class="credential-head">
+                <h2>CryoSPARC</h2>
+                <p>Connect to continue.</p>
+              </div>
+              <label><span class="label-row">Instance URL <span class="help" tabindex="0" data-tip="CryoSPARC URL from your browser, for example http://cryosparc.example.edu:39000. A browse/workspace URL is okay; cryoFILTER uses the server part.">?</span></span><input name="cryosparc_base_url" required placeholder="http://cryosparc.example.edu:39000" /></label>
+              <label><span class="label-row">Username/email <span class="help" tabindex="0" data-tip="CryoSPARC login name or email. Leave blank only when your environment or config already provides it.">?</span></span><input name="cryosparc_email" autocomplete="username" placeholder="user@example.edu" /></label>
+              <label><span class="label-row">Password <span class="help" tabindex="0" data-tip="CryoSPARC password. It is checked once and then passed to launched jobs without being saved in app state.">?</span></span><input name="cryosparc_password" type="password" autocomplete="current-password" /></label>
+              <div class="credential-actions">
+                <button type="submit">Connect</button>
+              </div>
+              <p id="cryosparcConnectStatus" class="credential-status" role="status" aria-live="polite"></p>
+            </form>
+          </div>
+        </section>
+
+        <section id="annotation" class="panel">
+          <form id="annotationForm" class="form-grid" data-kind="annotation" data-uses-cryosparc-connection>
+            <input name="cryosparc_base_url" type="hidden" />
+            <input name="cryosparc_email" type="hidden" />
+            <input name="cryosparc_password" type="hidden" />
+            <div class="section-title">
+              <h2>Annotation</h2>
+              <button type="submit">Start</button>
+            </div>
+            <div class="annotation-resume-row">
+              <label><span class="label-row">Recent session <span class="help" tabindex="0" data-tip="Saved browser annotation sessions in this app workspace. Resume opens the selected session at the first unsaved micrograph.">?</span></span><select id="annotationSessionSelect"><option value="">No recent sessions</option></select></label>
+              <div class="annotation-resume-actions">
+                <button class="quiet" type="button" id="annotationRefreshSessions">Refresh</button>
+                <button class="primary" type="button" id="annotationResumeSession">Resume</button>
+              </div>
+            </div>
+            <label><span class="label-row">Source <span class="help" tabindex="0" data-tip="Choose a local micrograph path, a CryoSPARC micrograph output, or an edited manifest from a previous annotation session.">?</span></span><select name="source_mode" id="annotationSourceMode"><option value="micrographs">Micrographs</option><option value="cryosparc">CryoSPARC output</option><option value="manifest">Resume manifest</option></select></label>
+            <label data-source-field="micrographs"><span class="label-row">Micrographs <span class="help" tabindex="0" data-tip="Path to a motion-corrected .mrc/.mrcs file or a directory of motion-corrected micrographs. cryoFILTER creates the annotation manifest for you.">?</span></span><input name="micrograph_source" placeholder="/path/to/motion_corrected_micrographs" /></label>
+            <label data-source-field="manifest" hidden><span class="label-row">Manifest <span class="help" tabindex="0" data-tip="Existing manifest_edited.csv from a partial annotation session. The editor resumes in that session directory by default.">?</span></span><input name="manifest" disabled placeholder="annotation_exports/my_data_v1/manifest_edited.csv" /></label>
+            <label data-source-field="cryosparc" hidden><span class="label-row">Project <span class="help" tabindex="0" data-tip="CryoSPARC project UID containing the motion correction or curation output. Connect in the CryoSPARC tab first.">?</span></span><input name="cryosparc_project" disabled placeholder="P1" /></label>
+            <label data-source-field="cryosparc" hidden><span class="label-row">Workspace <span class="help" tabindex="0" data-tip="CryoSPARC workspace UID containing the source job.">?</span></span><input name="cryosparc_workspace" disabled placeholder="W1" /></label>
+            <label data-source-field="cryosparc" hidden><span class="label-row">Micrographs <span class="help" tabindex="0" data-tip="CryoSPARC micrograph output reference from motion correction or curation. J12 is accepted and becomes J12:micrographs.">?</span></span><input name="cryosparc_micrographs" disabled placeholder="J12 or J12:micrographs" /></label>
+            <label><span class="label-row">Output root <span class="help" tabindex="0" data-tip="Directory where annotation sessions, edited masks, typed labels, and exported manifests are written.">?</span></span><input name="output_root" placeholder="./annotation_exports" /></label>
+            <label><span class="label-row">Output name <span class="help" tabindex="0" data-tip="Optional session name under Output root. Leave blank for a timestamped run directory.">?</span></span><input name="output_name" placeholder="my_data_v1" /></label>
+            <label><span class="label-row">Dataset ID <span class="help" tabindex="0" data-tip="dataset_id written into generated manifests. Use a simple numeric ID such as 1 unless you are combining multiple annotation sources.">?</span></span><input name="dataset_id" value="1" /></label>
+            <label><span class="label-row">Limit <span class="help" tabindex="0" data-tip="Optional maximum number of micrographs to load. Leave blank to use the full local directory or CryoSPARC output.">?</span></span><input name="limit_micrographs" type="number" min="1" placeholder="all" /></label>
+            <details class="advanced">
+              <summary>Advanced</summary>
+              <div class="advanced-grid">
+                <label><span class="label-row">Editor <span class="help" tabindex="0" data-tip="Browser is the default and needs only the app URL. Desktop opens the older matplotlib/Qt editor on the server and requires X forwarding.">?</span></span><select name="editor_mode"><option value="browser">Browser</option><option value="desktop">Desktop window</option></select></label>
+                <label><span class="label-row">Pixel size <span class="help" tabindex="0" data-tip="Optional Angstrom-per-pixel value for generated manifests when not available from CryoSPARC.">?</span></span><input name="pixel_size_angstrom" type="number" step="0.001" placeholder="A/px" /></label>
+                <label><span class="label-row">Micrograph root <span class="help" tabindex="0" data-tip="Optional directory used to resolve relative paths when resuming an existing manifest.">?</span></span><input name="mic_dir" placeholder="/path/to/micrographs" /></label>
+                <label><span class="label-row">Split <span class="help" tabindex="0" data-tip="Initial annotation split filter. Use ALL, TRAINING, or VALIDATION.">?</span></span><input name="initial_split" placeholder="ALL" /></label>
+                <label><span class="label-row">Dataset filter <span class="help" tabindex="0" data-tip="Optional comma- or space-separated dataset IDs to show when the annotation studio opens.">?</span></span><input name="initial_dataset_filter" /></label>
+                <label><span class="label-row">Row key <span class="help" tabindex="0" data-tip="Optional starting row key, usually formatted like dataset_id__stem. Useful for jumping back into a session.">?</span></span><input name="initial_row_key" /></label>
+                <label><span class="label-row">Train split <span class="help" tabindex="0" data-tip="Fraction of generated manifest rows labeled TRAINING. The rest are labeled VALIDATION for held-out checking.">?</span></span><input name="train_fraction" type="number" min="0.05" max="0.95" step="0.05" value="0.7" /></label>
+                <label><span class="label-row">Split seed <span class="help" tabindex="0" data-tip="Deterministic seed used when assigning generated manifest rows to TRAINING or VALIDATION.">?</span></span><input name="split_seed" type="number" value="42" /></label>
+                <label><span class="label-row">Prefetch workers <span class="help" tabindex="0" data-tip="Background workers that keep nearby images warm for faster scrolling. Use 0 to disable.">?</span></span><input name="prefetch_workers" type="number" min="0" value="2" /></label>
+                <label><span class="label-row">Prefetch radius <span class="help" tabindex="0" data-tip="How many previous and next rows the editor preloads around the current micrograph.">?</span></span><input name="prefetch_radius" type="number" min="0" value="3" /></label>
+                <label><span class="label-row">Cache size <span class="help" tabindex="0" data-tip="Maximum number of loaded micrographs kept in memory for quick back-and-forth review.">?</span></span><input name="row_cache_size" type="number" min="1" value="18" /></label>
+                <label><span class="label-row">Transfer GB <span class="help" tabindex="0" data-tip="Safety cap used only when Copy micrographs is enabled for a CryoSPARC annotation source.">?</span></span><input name="max_transfer_gb" type="number" step="1" value="25" /></label>
+                <label><span class="label-row">Staging root <span class="help" tabindex="0" data-tip="Optional local directory for CryoSPARC annotation manifests and, if enabled, copied micrographs.">?</span></span><input name="local_run_root" placeholder="./cryofilter_runs/annotation_staging" /></label>
+                <label><span class="label-row">Config <span class="help" tabindex="0" data-tip="Optional cryosparc.toml path for site-specific CryoSPARC defaults.">?</span></span><input name="config" placeholder="/path/to/cryosparc.toml" /></label>
+                <label class="check"><input name="recursive" type="checkbox" checked /><span class="label-row">Recursive <span class="help" tabindex="0" data-tip="Search nested directories when generating a manifest from local micrographs.">?</span></span></label>
+                <label class="check"><input name="copy_cryosparc_micrographs" type="checkbox" /><span class="label-row">Copy micrographs <span class="help" tabindex="0" data-tip="Usually leave off. Enable only if this server cannot directly read the CryoSPARC project micrograph paths.">?</span></span></label>
+                <label class="check"><input name="resume_in_place" type="checkbox" checked /><span class="label-row">Resume in place <span class="help" tabindex="0" data-tip="When loading an edited manifest, continue writing masks and manifest updates in that same session directory.">?</span></span></label>
+                <label class="check"><input name="export_only_modified" type="checkbox" /><span class="label-row">Modified only <span class="help" tabindex="0" data-tip="Export only masks changed in this session while preserving existing paths for unmodified rows.">?</span></span></label>
+              </div>
+            </details>
+            <p id="annotationLaunchStatus" class="credential-status" role="status" aria-live="polite"></p>
+          </form>
+          <div id="annotationBrowser" class="annotation-browser" hidden>
+            <div class="annotation-toolbar">
+              <div class="annotation-summary">
+                <strong id="annotationSessionTitle">Annotation session</strong>
+                <span id="annotationSessionMeta">No image loaded</span>
+              </div>
+              <div class="annotation-actions">
+                <button class="quiet" type="button" id="annotationPrev">Prev</button>
+                <label class="annotation-jump"><span>Row</span><input id="annotationJump" type="number" min="1" value="1" /></label>
+                <button class="quiet" type="button" id="annotationNext">Next</button>
+                <button class="quiet" type="button" id="annotationUndo">Undo</button>
+                <button class="quiet danger" type="button" id="annotationDelete">Delete</button>
+                <button class="quiet" type="button" id="annotationClosePolygon">Close</button>
+                <button class="quiet danger" type="button" id="annotationClear">Clear</button>
+                <button type="button" id="annotationSave">Save</button>
+                <button class="primary" type="button" id="annotationSaveNext">Save + Next</button>
+                <button class="quiet" type="button" id="annotationFinalize">Done</button>
+              </div>
+            </div>
+            <div class="annotation-workspace">
+              <div class="annotation-canvas-wrap">
+                <canvas id="annotationCanvas" width="1200" height="900" aria-label="Micrograph annotation canvas"></canvas>
+                <div id="annotationCanvasEmpty" class="annotation-empty">No micrograph loaded.</div>
+              </div>
+              <aside class="annotation-side">
+                <label><span class="label-row">Action <span class="help" tabindex="0" data-tip="Add marks contamination. Erase subtracts from existing annotations after you draw; Save writes the updated mask.">?</span></span><select id="annotationAction"><option value="add">Add mask</option><option value="erase">Erase mask</option></select></label>
+                <label><span class="label-row">Mode <span class="help" tabindex="0" data-tip="Polygon adds points by clicking. Circle / ellipse draws a stretched oval by dragging; drag an ellipse center handle to move it or a corner handle to rotate it.">?</span></span><select id="annotationMode"><option value="polygon">Polygon</option><option value="ellipse">Circle / ellipse</option></select></label>
+                <label><span class="label-row">Region type <span class="help" tabindex="0" data-tip="Optional subtype for the polygon you are drawing. Unlabeled still trains as contamination; typed labels are saved for subtype-aware workflows.">?</span></span><select id="annotationType"><option value="">Unlabeled</option><option value="1">Carbon</option><option value="2">Crystalline</option><option value="3">Aggregate</option><option value="4">Ethane</option></select></label>
+                <div class="annotation-view-controls">
+                  <div class="mini-section-title">
+                    <span>View</span>
+                    <button class="quiet" type="button" id="annotationResetView">Reset</button>
+                  </div>
+                  <label><span class="label-row">Contrast <output id="annotationContrastValue">125%</output></span><input id="annotationContrast" type="range" min="50" max="250" step="5" value="125" /></label>
+                  <label><span class="label-row">Brightness <output id="annotationBrightnessValue">100%</output></span><input id="annotationBrightness" type="range" min="50" max="180" step="5" value="100" /></label>
+                  <label><span class="label-row">Gamma <output id="annotationGammaValue">100%</output></span><input id="annotationGamma" type="range" min="50" max="200" step="5" value="100" /></label>
+                  <label class="check"><input id="annotationInvert" type="checkbox" /><span class="label-row">Invert</span></label>
+                </div>
+                <label class="check"><input id="annotationOverlayToggle" type="checkbox" checked /><span class="label-row">Overlay</span></label>
+                <div class="annotation-row-info">
+                  <span id="annotationRowKey">-</span>
+                  <span id="annotationRowPath">-</span>
+                  <span id="annotationSaveState">Unsaved</span>
+                </div>
+              </aside>
+            </div>
+          </div>
+        </section>
+
+        <section id="training" class="panel">
+          <form class="form-grid" data-kind="train" data-uses-cryosparc-connection>
+            <input name="cryosparc_base_url" type="hidden" />
+            <input name="cryosparc_email" type="hidden" />
+            <input name="cryosparc_password" type="hidden" />
+            <div class="section-title">
+              <h2>Fine-tune</h2>
+              <button type="submit">Launch</button>
+            </div>
+            <label><span class="label-row">Edited manifest <span class="help" tabindex="0" data-tip="Manifest exported from the annotation workflow. It must include gt_mask_path for the masks used in fine-tuning.">?</span></span><input name="manifest" required placeholder="annotation_exports/my_data_v1/manifest_edited.csv" /></label>
+            <label><span class="label-row">Micrograph source <span class="help" tabindex="0" data-tip="Auto uses micrograph paths already in the edited manifest. Choose CryoSPARC output to reuse the same workspace source as annotation.">?</span></span><select name="mic_source_mode" id="trainMicrographSourceMode"><option value="manifest">Auto from manifest</option><option value="local">Local directory</option><option value="cryosparc">CryoSPARC output</option></select></label>
+            <label data-train-mic-source="local" hidden><span class="label-row">Micrographs <span class="help" tabindex="0" data-tip="Directory containing the motion-corrected micrographs used by the edited manifest.">?</span></span><input name="mic_dir" disabled placeholder="/path/to/micrographs" /></label>
+            <label data-train-mic-source="cryosparc" hidden><span class="label-row">Project <span class="help" tabindex="0" data-tip="CryoSPARC project UID containing the annotated micrograph output. Connect in the CryoSPARC tab first.">?</span></span><input name="cryosparc_project" disabled placeholder="P1" /></label>
+            <label data-train-mic-source="cryosparc" hidden><span class="label-row">Workspace <span class="help" tabindex="0" data-tip="CryoSPARC workspace UID containing the annotated micrograph output.">?</span></span><input name="cryosparc_workspace" disabled placeholder="W1" /></label>
+            <label data-train-mic-source="cryosparc" hidden><span class="label-row">Micrographs <span class="help" tabindex="0" data-tip="CryoSPARC micrograph output reference used for annotation. J12 is accepted and becomes J12:micrographs.">?</span></span><input name="cryosparc_micrographs" disabled placeholder="J12 or J12:micrographs" /></label>
+            <label><span class="label-row">Base weights <span class="help" tabindex="0" data-tip="Checkpoint to fine-tune from, usually the public cryoFILTER_FULL.pt model.">?</span></span><input name="pretrained_model" required placeholder="pretrained_models/cryoFILTER_FULL.pt" /></label>
+            <label><span class="label-row">Output <span class="help" tabindex="0" data-tip="Training run directory where checkpoints, validation metrics, and stitched validation overlays are written.">?</span></span><input name="output_dir" placeholder="./finetune_my_data_v1" /></label>
+            <label><span class="label-row">Train IDs <span class="help" tabindex="0" data-tip="Optional comma-separated dataset_id values used for training. Leave blank with Val IDs blank to randomly split saved annotation rows 70/30.">?</span></span><input name="train_dataset_ids" placeholder="optional" /></label>
+            <label><span class="label-row">Val IDs <span class="help" tabindex="0" data-tip="Optional comma-separated held-out dataset_id values. Provide this only with Train IDs, or leave both blank for the automatic saved-row split.">?</span></span><input name="val_dataset_ids" placeholder="optional" /></label>
+            <label><span class="label-row">Train split <span class="help" tabindex="0" data-tip="Fraction of saved annotation rows assigned to training when Train IDs and Val IDs are blank.">?</span></span><input name="train_fraction" type="number" min="0.05" max="0.95" step="0.05" value="0.7" /></label>
+            <label><span class="label-row">Split seed <span class="help" tabindex="0" data-tip="Deterministic seed for the automatic saved-row train/validation split.">?</span></span><input name="split_seed" type="number" value="42" /></label>
+            <label><span class="label-row">Epochs <span class="help" tabindex="0" data-tip="Maximum fine-tuning epochs. Early stopping may end training sooner.">?</span></span><input name="num_epochs" type="number" value="120" /></label>
+            <label><span class="label-row">Batch size <span class="help" tabindex="0" data-tip="Training batch size. Reduce this if the GPU runs out of memory; 16 is intended to fit common 24 GB GPUs.">?</span></span><input name="batch_size" type="number" value="16" /></label>
+            <label><span class="label-row">GPUs <span class="help" tabindex="0" data-tip="Number of visible CUDA GPUs to use for fine-tuning. Use 1 unless this shell was started with multiple GPUs available.">?</span></span><input name="num_gpus" type="number" min="1" value="1" /></label>
+            <label><span class="label-row">Learning rate <span class="help" tabindex="0" data-tip="Fine-tuning learning rate. The default is intentionally gentle for small annotation sets.">?</span></span><input name="learning_rate" value="2e-5" /></label>
+            <label><span class="label-row">Workers <span class="help" tabindex="0" data-tip="Data-loader worker processes. Use fewer workers on shared login nodes and more on compute nodes.">?</span></span><input name="num_workers" type="number" value="4" /></label>
+            <label><span class="label-row">Patches per mic <span class="help" tabindex="0" data-tip="How many full-micrograph training patches to sample from each micrograph per epoch. Increase for longer, denser fine-tuning runs.">?</span></span><input name="full_mic_patches_per_mic" type="number" value="64" /></label>
+            <label><span class="label-row">Extra args <span class="help" tabindex="0" data-tip="Advanced training flags appended to the generated fine-tuning command, formatted exactly as command-line tokens.">?</span></span><input name="extra_args" placeholder="--device cuda" /></label>
+            <label class="check"><input name="fill_region_holes" type="checkbox" /><span class="label-row">Fill region holes <span class="help" tabindex="0" data-tip="Fill holes inside annotated contamination regions before training. Leave off when membrane or mesh holes should remain background.">?</span></span></label>
+          </form>
+        </section>
+      </main>
+    </div>
+    <script src="/static/app.js"></script>
+  </body>
+</html>
