@@ -116,3 +116,73 @@ def test_full_micrograph_training_normalizes_row_split_labels() -> None:
     assert _normalize_row_split_label("train") == "TRAINING"
     assert _normalize_row_split_label("val") == "VALIDATION"
     assert _normalize_row_split_label("VALID") == "VALIDATION"
+
+
+def test_stitched_validation_passes_frequency_band_psd_options(
+    tmp_path: Path, monkeypatch
+) -> None:
+    image_path = tmp_path / "micrograph.mrc"
+    mask_path = tmp_path / "mask.npy"
+    _write_mrc(image_path, np.zeros((32, 32), dtype=np.float32))
+    mask = np.zeros((32, 32), dtype=np.uint8)
+    mask[8:24, 8:24] = 1
+    np.save(mask_path, mask)
+    calls: list[dict[str, object]] = []
+
+    def fake_predict_bad_regions_probability(**kwargs):
+        calls.append(kwargs)
+        prob = np.zeros_like(kwargs["image"], dtype=np.float32)
+        prob[8:24, 8:24] = 0.9
+        return prob
+
+    monkeypatch.setattr(
+        fast_train,
+        "predict_bad_regions_probability",
+        fake_predict_bad_regions_probability,
+    )
+
+    rule = fast_train.compute_dataset_min_area_px_from_train_split(
+        [("1", str(mask_path))],
+        min_area_floor_px=1,
+    )
+    metrics = fast_train.run_stitched_val_fast(
+        model=object(),
+        fixed_set=[(image_path, mask_path, "1", "micrograph")],
+        rule=rule,
+        device="cpu",
+        patch_size=16,
+        overlap=4,
+        normalization_method="none",
+        psd_use_radial_normalization=True,
+        psd_frequency_band_channels=True,
+        psd_frequency_bands=((0.03, 0.05),),
+        psd_frequency_band_include_full_spectrum=True,
+        psd_frequency_band_include_anisotropy=True,
+        psd_frequency_band_anisotropy_min_freq=0.02,
+        use_psd=True,
+        return_native_resolution=False,
+        metrics_max_samples=1024,
+    )
+
+    assert metrics["validation_ok"] is True
+    assert metrics["n_mics"] == 1
+    assert calls
+    assert calls[0]["psd_frequency_band_include_full_spectrum"] is True
+    assert calls[0]["psd_frequency_band_include_anisotropy"] is True
+
+
+def test_stitched_validation_empty_result_is_not_a_real_metric() -> None:
+    metrics = fast_train.run_stitched_val_fast(
+        model=object(),
+        fixed_set=[],
+        rule=fast_train.compute_dataset_min_area_px_from_train_split([]),
+        device="cpu",
+        patch_size=16,
+        overlap=4,
+        normalization_method="none",
+        psd_use_radial_normalization=True,
+    )
+
+    assert metrics["validation_ok"] is False
+    assert metrics["n_mics"] == 0
+    assert metrics["skip_reason"] == "all_prediction_failed"

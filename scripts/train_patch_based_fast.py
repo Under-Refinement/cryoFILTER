@@ -4560,6 +4560,33 @@ def _build_fixed_stitched_val_set(
     return out
 
 
+def _empty_stitched_val_metrics(
+    *,
+    attempted: int,
+    predicted: int = 0,
+    skipped_errors: Optional[List[str]] = None,
+    reason: str = "no_usable_micrographs",
+) -> Dict[str, object]:
+    errors = [str(err) for err in (skipped_errors or [])]
+    return {
+        "pr_auc": 0.0,
+        "auroc": 0.0,
+        "recall_at_fp_cap": 0.0,
+        "fp_area_pct_median": 1.0,
+        "pred_components_median": 0.0,
+        "junk_pct_error": 1.0,
+        "n_mics": 0,
+        "n_mics_attempted": int(attempted),
+        "n_mics_predicted": int(predicted),
+        "n_mics_skipped": max(0, int(attempted) - int(predicted)),
+        "prob_pos_median": 0.0,
+        "prob_neg_median": 0.0,
+        "validation_ok": False,
+        "skip_reason": str(reason),
+        "skipped_errors": errors[:5],
+    }
+
+
 def run_stitched_val_fast(
     model: nn.Module,
     fixed_set: List[Tuple[Path, Path, str, str]],
@@ -4608,7 +4635,7 @@ def run_stitched_val_fast(
     blending_edge_px: int = 16,
     threshold_grid: Optional[Tuple[float, ...]] = None,
     metrics_max_samples: int = 5_000_000,
-) -> Dict[str, float]:
+) -> Dict[str, object]:
     """
     Stitched full-micrograph validation: primary signal for checkpoint selection.
     Pixel: PR-AUC, AUROC. Operational: FP area % median, recall at FP cap.
@@ -4625,6 +4652,7 @@ def run_stitched_val_fast(
     all_gt_masks = []
     all_stems = []  # (dataset_id, stem) for export
     all_raw_imgs = []  # raw micrograph for export panels
+    skipped_errors = []
 
     for mic_path, gt_path, dataset_id, stem in fixed_set:
         try:
@@ -4720,10 +4748,24 @@ def run_stitched_val_fast(
             if export_dir is not None:
                 all_raw_imgs.append(np.asarray(img).copy())
         except Exception as e:
-            warnings.warn(f"Stitched val skip {stem!s}: {e}")
+            error_text = f"{stem!s}: {e}"
+            skipped_errors.append(error_text)
+            warnings.warn(f"Stitched val skip {error_text}")
 
     if len(all_probs) == 0:
-        return {"pr_auc": 0.0, "auroc": 0.0, "recall_at_fp_cap": 0.0, "fp_area_pct_median": 1.0, "pred_components_median": 0.0, "junk_pct_error": 1.0, "n_mics": 0, "prob_pos_median": 0.0, "prob_neg_median": 0.0}
+        print(
+            f"    WARNING: Stitched validation produced no usable micrographs "
+            f"(attempted={len(fixed_set)}, skipped={len(skipped_errors)}).",
+            flush=True,
+        )
+        if skipped_errors:
+            print(f"    First stitched-val error: {skipped_errors[0]}", flush=True)
+        return _empty_stitched_val_metrics(
+            attempted=len(fixed_set),
+            predicted=0,
+            skipped_errors=skipped_errors,
+            reason="all_prediction_failed",
+        )
 
     # Filter out excluded datasets for metric computation (but they're already in all_* for export)
     exclude_set = set(exclude_datasets_from_metrics or [])
@@ -4740,6 +4782,19 @@ def run_stitched_val_fast(
     n_excluded = len(all_probs) - len(metric_probs)
     if n_excluded > 0:
         print(f"    Using {len(metric_probs)} micrographs for metrics ({n_excluded} excluded for visual monitoring only)", flush=True)
+
+    if len(metric_probs) == 0:
+        print(
+            f"    WARNING: Stitched validation had predictions for {len(all_prob_maps)} "
+            "micrographs, but none were eligible for metric computation.",
+            flush=True,
+        )
+        return _empty_stitched_val_metrics(
+            attempted=len(fixed_set),
+            predicted=len(all_prob_maps),
+            skipped_errors=skipped_errors,
+            reason="all_metric_micrographs_excluded",
+        )
 
     if export_dir is not None:
         export_dir = Path(export_dir)
@@ -4942,7 +4997,11 @@ def run_stitched_val_fast(
         "fp_area_pct_median": fp_area_median,
         "pred_components_median": pred_components_median,
         "junk_pct_error": junk_pct_error,
-        "n_mics": len(all_prob_maps),
+        "n_mics": len(metric_prob_maps),
+        "n_mics_attempted": len(fixed_set),
+        "n_mics_predicted": len(all_prob_maps),
+        "n_mics_skipped": len(skipped_errors),
+        "validation_ok": True,
         "prob_pos_median": prob_pos_median,
         "prob_neg_median": prob_neg_median,
         "recommended_threshold": recommended_threshold,
@@ -7290,6 +7349,19 @@ def main():
                         metrics_max_samples=getattr(args, "stitched_val_metrics_max_samples", 5_000_000),
                     )
 
+                    n_stitched_mics = int(stitched_metrics.get("n_mics", 0) or 0)
+                    if n_stitched_mics <= 0:
+                        print(
+                            "  [PRIMARY METRICS] Skipped: stitched validation produced no usable "
+                            "micrographs, so checkpoint selection was not updated.",
+                            flush=True,
+                        )
+                        first_error = (stitched_metrics.get("skipped_errors") or [""])[0]
+                        if first_error:
+                            print(f"  First stitched-val error: {first_error}", flush=True)
+                        print(f"{'='*80}\n", flush=True)
+                        continue
+
                     prauc = stitched_metrics.get('pr_auc', 0.0)
                     auroc = stitched_metrics.get('auroc', 0.0)
                     fp_area = stitched_metrics.get('fp_area_pct_median', 1.0)
@@ -8126,15 +8198,25 @@ def main():
                 threshold_grid=getattr(args, "stitched_val_threshold_grid", None),
                 metrics_max_samples=getattr(args, "stitched_val_metrics_max_samples", 5_000_000),
             )
-            print(f"  [PRIMARY METRICS] Stitched PR-AUC: {stitched['pr_auc']:.4f} | AUROC: {stitched['auroc']:.4f}", flush=True)
-            print(f"  [PRIMARY METRICS] FP area median: {stitched['fp_area_pct_median']*100:.2f}%% | Pred components median: {stitched['pred_components_median']:.1f} | Junk %% error: {stitched['junk_pct_error']*100:.2f}%%", flush=True)
-            print(f"  Recall@FP≤{args.stitched_val_fp_area_cap_pct}%%: {stitched['recall_at_fp_cap']:.4f}", flush=True)
-            # Print multi-FP-cap recalls if available
-            multi_fp_keys = [k for k in stitched.keys() if k.startswith("recall_at_fp_")]
-            if multi_fp_keys:
-                multi_fp_str = " | ".join([f"{k.replace('recall_at_fp_', 'R@')}={stitched[k]:.3f}" for k in sorted(multi_fp_keys)])
-                print(f"  Multi-FP-cap recalls: {multi_fp_str}", flush=True)
-            print(f"  Prob hist (pos/neg median): {stitched.get('prob_pos_median', 0):.3f} / {stitched.get('prob_neg_median', 0):.3f}", flush=True)
+            if int(stitched.get("n_mics", 0) or 0) <= 0:
+                print(
+                    "  [PRIMARY METRICS] Skipped: stitched validation produced no usable "
+                    "micrographs, so checkpoint selection was not updated.",
+                    flush=True,
+                )
+                first_error = (stitched.get("skipped_errors") or [""])[0]
+                if first_error:
+                    print(f"  First stitched-val error: {first_error}", flush=True)
+            else:
+                print(f"  [PRIMARY METRICS] Stitched PR-AUC: {stitched['pr_auc']:.4f} | AUROC: {stitched['auroc']:.4f}", flush=True)
+                print(f"  [PRIMARY METRICS] FP area median: {stitched['fp_area_pct_median']*100:.2f}%% | Pred components median: {stitched['pred_components_median']:.1f} | Junk %% error: {stitched['junk_pct_error']*100:.2f}%%", flush=True)
+                print(f"  Recall@FP≤{args.stitched_val_fp_area_cap_pct}%%: {stitched['recall_at_fp_cap']:.4f}", flush=True)
+                # Print multi-FP-cap recalls if available
+                multi_fp_keys = [k for k in stitched.keys() if k.startswith("recall_at_fp_")]
+                if multi_fp_keys:
+                    multi_fp_str = " | ".join([f"{k.replace('recall_at_fp_', 'R@')}={stitched[k]:.3f}" for k in sorted(multi_fp_keys)])
+                    print(f"  Multi-FP-cap recalls: {multi_fp_str}", flush=True)
+                print(f"  Prob hist (pos/neg median): {stitched.get('prob_pos_median', 0):.3f} / {stitched.get('prob_neg_median', 0):.3f}", flush=True)
             if export_dir:
                 print(f"  Exported stitched prob maps → {export_dir}", flush=True)
             if stitched["n_mics"] > 0:

@@ -166,6 +166,9 @@ def _resolve_checkpoint_model_config(checkpoint) -> Dict[str, object]:
         "psd_scales": psd_scales,
         "psd_frequency_band_channels": bool(meta.get("psd_frequency_band_channels", False)),
         "psd_frequency_bands": tuple(psd_frequency_bands),
+        "psd_frequency_band_include_full_spectrum": bool(
+            meta.get("psd_frequency_band_include_full_spectrum", False)
+        ),
         "psd_frequency_band_include_anisotropy": bool(meta.get("psd_frequency_band_include_anisotropy", False)),
         "psd_frequency_band_anisotropy_min_freq": float(meta.get("psd_frequency_band_anisotropy_min_freq", 0.0)),
     }
@@ -186,6 +189,9 @@ def _attach_model_input_metadata(model: torch.nn.Module, config: Dict[str, objec
         meta_target.psd_frequency_band_channels = bool(config.get("psd_frequency_band_channels", False))
         meta_target.psd_frequency_bands = tuple(
             (float(lo), float(hi)) for lo, hi in tuple(config.get("psd_frequency_bands", ()))
+        )
+        meta_target.psd_frequency_band_include_full_spectrum = bool(
+            config.get("psd_frequency_band_include_full_spectrum", False)
         )
         meta_target.psd_frequency_band_include_anisotropy = bool(
             config.get("psd_frequency_band_include_anisotropy", False)
@@ -236,6 +242,7 @@ def predict_bad_regions_probability(model: torch.nn.Module, image: np.ndarray,
                                    psd_scales: Optional[Tuple[int, ...]] = None,
                                    psd_frequency_band_channels: Optional[bool] = None,
                                    psd_frequency_bands: Optional[Tuple[Tuple[float, float], ...]] = None,
+                                   psd_frequency_band_include_full_spectrum: Optional[bool] = None,
                                    psd_frequency_band_include_anisotropy: Optional[bool] = None,
                                    psd_frequency_band_anisotropy_min_freq: Optional[float] = None,
                                    psd_texture_mode: bool = False,
@@ -369,6 +376,10 @@ def predict_bad_regions_probability(model: torch.nn.Module, image: np.ndarray,
         )
     else:
         psd_frequency_bands = tuple((float(lo), float(hi)) for lo, hi in tuple(psd_frequency_bands))
+    if psd_frequency_band_include_full_spectrum is None:
+        psd_frequency_band_include_full_spectrum = bool(
+            getattr(model, "psd_frequency_band_include_full_spectrum", False)
+        )
     if psd_frequency_band_include_anisotropy is None:
         psd_frequency_band_include_anisotropy = bool(
             getattr(model, "psd_frequency_band_include_anisotropy", False)
@@ -432,6 +443,7 @@ def predict_bad_regions_probability(model: torch.nn.Module, image: np.ndarray,
             psd_scales=psd_scales,
             psd_frequency_band_channels=psd_frequency_band_channels,
             psd_frequency_bands=psd_frequency_bands,
+            psd_frequency_band_include_full_spectrum=psd_frequency_band_include_full_spectrum,
             psd_frequency_band_include_anisotropy=psd_frequency_band_include_anisotropy,
             psd_frequency_band_anisotropy_min_freq=psd_frequency_band_anisotropy_min_freq,
             psd_texture_mode=psd_texture_mode,
@@ -483,6 +495,7 @@ def predict_bad_regions_probability(model: torch.nn.Module, image: np.ndarray,
             psd_scales=psd_scales,
             psd_frequency_band_channels=psd_frequency_band_channels,
             psd_frequency_bands=psd_frequency_bands,
+            psd_frequency_band_include_full_spectrum=psd_frequency_band_include_full_spectrum,
             psd_frequency_band_include_anisotropy=psd_frequency_band_include_anisotropy,
             psd_frequency_band_anisotropy_min_freq=psd_frequency_band_anisotropy_min_freq,
             psd_texture_mode=psd_texture_mode,
@@ -573,6 +586,7 @@ def predict_bad_regions_probability(model: torch.nn.Module, image: np.ndarray,
                 psd_scales=psd_scales,
                 psd_frequency_band_channels=psd_frequency_band_channels,
                 psd_frequency_bands=psd_frequency_bands,
+                psd_frequency_band_include_full_spectrum=psd_frequency_band_include_full_spectrum,
                 psd_frequency_band_include_anisotropy=psd_frequency_band_include_anisotropy,
                 psd_frequency_band_anisotropy_min_freq=psd_frequency_band_anisotropy_min_freq,
                 psd_texture_mode=psd_texture_mode,
@@ -703,6 +717,7 @@ def predict_bad_regions_probability(model: torch.nn.Module, image: np.ndarray,
             frequency_bands=tuple(psd_frequency_bands),
             normalize=True,
             use_radial_normalization=bool(psd_use_radial_normalization),
+            include_full_spectrum_channel=bool(psd_frequency_band_include_full_spectrum),
             include_anisotropy_channel=bool(psd_frequency_band_include_anisotropy),
             anisotropy_min_frequency=float(psd_frequency_band_anisotropy_min_freq),
         )
@@ -1049,6 +1064,7 @@ def predict_bad_regions_probability(model: torch.nn.Module, image: np.ndarray,
                                     frequency_bands=tuple(psd_frequency_bands),
                                     normalize=True,
                                     use_radial_normalization=bool(psd_use_radial_normalization),
+                                    include_full_spectrum_channel=bool(psd_frequency_band_include_full_spectrum),
                                     include_anisotropy_channel=bool(psd_frequency_band_include_anisotropy),
                                     anisotropy_min_frequency=float(psd_frequency_band_anisotropy_min_freq),
                                 )
@@ -1148,6 +1164,7 @@ def predict_bad_regions_probability(model: torch.nn.Module, image: np.ndarray,
                                     frequency_bands=tuple(psd_frequency_bands),
                                     normalize=True,
                                     use_radial_normalization=bool(psd_use_radial_normalization),
+                                    include_full_spectrum_channel=bool(psd_frequency_band_include_full_spectrum),
                                     include_anisotropy_channel=bool(psd_frequency_band_include_anisotropy),
                                     anisotropy_min_frequency=float(psd_frequency_band_anisotropy_min_freq),
                                 )
@@ -1413,6 +1430,11 @@ def predict_bad_regions_probability(model: torch.nn.Module, image: np.ndarray,
                 psd_multiscale_separate_channels=psd_multiscale_separate_channels,
                 multiscale_psd_source=multiscale_psd_source,
                 psd_scales=psd_scales,
+                psd_frequency_band_channels=psd_frequency_band_channels,
+                psd_frequency_bands=psd_frequency_bands,
+                psd_frequency_band_include_full_spectrum=psd_frequency_band_include_full_spectrum,
+                psd_frequency_band_include_anisotropy=psd_frequency_band_include_anisotropy,
+                psd_frequency_band_anisotropy_min_freq=psd_frequency_band_anisotropy_min_freq,
                 psd_texture_mode=psd_texture_mode,
                 psd_highpass_cutoff=psd_highpass_cutoff,
                 tile_offset_y=tile_offset_y,
