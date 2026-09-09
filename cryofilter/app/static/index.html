@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
-    <link rel="stylesheet" href="/static/styles.css" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260909-connect-fix" />
   </head>
   <body>
     <div class="shell">
@@ -208,7 +208,7 @@
                 </details>
               </form>
             </div>
-            <form id="cryosparcConnectForm" class="credential-card" autocomplete="on">
+            <form id="cryosparcConnectForm" class="credential-card" autocomplete="on" onsubmit="return false">
               <div class="credential-head">
                 <h2>CryoSPARC</h2>
                 <p id="cryosparcCredentialHint">Connect to continue.</p>
@@ -357,6 +357,6 @@
         </section>
       </main>
     </div>
-    <script src="/static/app.js"></script>
+    <script src="/static/app.js?v=20260909-connect-fix"></script>
   </body>
 </html>

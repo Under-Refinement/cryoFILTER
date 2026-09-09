@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import socket
 import sys
+import threading
+from http.client import HTTPConnection
 from pathlib import Path
 
 import mrcfile
@@ -107,6 +109,28 @@ def test_app_reclaim_port_ignores_non_cryofilter_process(monkeypatch) -> None:
     )
 
     assert app_server._reclaim_cryofilter_app_port(host="127.0.0.1", port=8765) == []
+
+
+def test_app_static_files_are_not_cached(tmp_path: Path) -> None:
+    server, port = _bind_app_server(
+        host="127.0.0.1",
+        port=0,
+        handler_cls=make_handler(AppState(tmp_path)),
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    connection = HTTPConnection("127.0.0.1", port, timeout=2)
+    try:
+        connection.request("GET", "/static/app.js?v=test")
+        response = connection.getresponse()
+        response.read()
+        assert response.status == 200
+        assert response.getheader("Cache-Control") == "no-cache"
+    finally:
+        connection.close()
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
 
 
 def test_infer_job_spec_builds_cli_command(tmp_path: Path) -> None:

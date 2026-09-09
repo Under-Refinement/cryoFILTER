@@ -650,9 +650,8 @@ button {
 
 .cryosparc-gate {
   position: relative;
-  display: grid;
-  gap: 16px;
   max-width: 1120px;
+  min-height: 560px;
 }
 
 .cryosparc-run-area {
@@ -660,32 +659,44 @@ button {
 }
 
 .cryosparc-gate.is-locked .cryosparc-run-area {
-  opacity: 0.38;
+  filter: blur(3px);
+  opacity: 0.32;
   pointer-events: none;
   user-select: none;
 }
 
 .cryosparc-gate.is-locked::before {
-  display: none;
+  content: "";
+  position: absolute;
+  inset: -20px;
+  z-index: 2;
+  background: rgba(7, 12, 16, 0.58);
+  backdrop-filter: blur(2px);
 }
 
 .credential-card {
+  position: absolute;
+  top: clamp(28px, 10vh, 92px);
+  left: 50%;
+  z-index: 3;
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  width: min(430px, calc(100vw - 48px));
   gap: 14px;
   border: 0.5px solid var(--line-2);
   border-radius: var(--radius);
   padding: 18px;
   background: var(--bg-2);
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.45);
+  transform: translateX(-50%);
 }
 
-.credential-card label:first-of-type {
-  grid-column: 1 / -1;
+.cryosparc-gate:not(.is-locked) .credential-card,
+.cryosparc-gate:not(.is-locked)::before {
+  display: none;
 }
 
 .credential-head {
   display: grid;
-  grid-column: 1 / -1;
   gap: 4px;
 }
 
@@ -707,7 +718,6 @@ button {
 }
 
 .credential-status {
-  grid-column: 1 / -1;
   min-height: 18px;
   color: var(--fg-3);
   font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -1118,7 +1128,6 @@ button[type="submit"] {
 
   .monitor-grid,
   .form-grid,
-  .credential-card,
   .advanced-grid,
   .live-summary-head,
   .live-charts,

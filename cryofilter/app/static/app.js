@@ -120,9 +120,11 @@ function syncCryosparcRunCredentials(payload) {
 }
 
 async function connectCryosparc(form) {
+  if (form.dataset.busy === "1") return;
   const payload = formPayload(form);
   const button = form.querySelector('button[type="submit"]');
-  button.disabled = true;
+  form.dataset.busy = "1";
+  if (button) button.disabled = true;
   setCryosparcStatus("Checking connection...");
   try {
     const result = await api("/api/cryosparc/connect", {
@@ -137,7 +139,8 @@ async function connectCryosparc(form) {
   } catch (error) {
     setCryosparcStatus(error.message, "error");
   } finally {
-    button.disabled = false;
+    if (button) button.disabled = false;
+    delete form.dataset.busy;
   }
 }
 
@@ -2216,9 +2219,17 @@ function bindForms() {
 }
 
 function bindControls() {
-  $("#cryosparcConnectForm")?.addEventListener("submit", async (event) => {
+  const cryosparcConnectForm = $("#cryosparcConnectForm");
+  cryosparcConnectForm?.addEventListener("submit", async (event) => {
     event.preventDefault();
+    event.stopPropagation();
     await connectCryosparc(event.currentTarget);
+  }, true);
+  cryosparcConnectForm?.querySelector('button[type="submit"]')?.addEventListener("click", async (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (cryosparcConnectForm.reportValidity && !cryosparcConnectForm.reportValidity()) return;
+    await connectCryosparc(cryosparcConnectForm);
   });
   $$("[data-action='change-cryosparc']").forEach((button) => {
     button.addEventListener("click", resetCryosparcConnection);
