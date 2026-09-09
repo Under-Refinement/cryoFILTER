@@ -9,6 +9,7 @@ import mrcfile
 import numpy as np
 import pytest
 
+from cryofilter.app import server as app_server
 from cryofilter.app.server import (
     ARTIFACT_SUFFIXES,
     AppState,
@@ -28,6 +29,10 @@ def test_app_parser_aliases_are_available() -> None:
     args = parser.parse_args(["app", "--port", "9100"])
     assert args.command == "app"
     assert args.port == 9100
+    assert args.reclaim_port is True
+
+    args = parser.parse_args(["app", "--no-reclaim-port"])
+    assert args.reclaim_port is False
 
     args = parser.parse_args(["studio", "--work-dir", "runs"])
     assert args.command == "studio"
@@ -69,6 +74,39 @@ def test_app_startup_lines_warn_about_ssh_tunnel_port_changes(tmp_path: Path) ->
     assert any("existing SSH tunnel for 8765" in line for line in lines)
     assert any("forward 8766" in line for line in lines)
     assert any("ssh -L 8766:127.0.0.1:8766 user@silva" in line for line in lines)
+
+
+def test_app_reclaim_port_stops_owned_cryofilter_app(monkeypatch) -> None:
+    calls = {"listening": 0}
+    terminated: list[int] = []
+
+    def listening_pids(_port: int) -> list[int]:
+        calls["listening"] += 1
+        return [12345] if calls["listening"] == 1 else []
+
+    monkeypatch.setattr(app_server, "_listening_pids_for_port", listening_pids)
+    monkeypatch.setattr(app_server, "_process_owned_by_current_user", lambda _pid: True)
+    monkeypatch.setattr(app_server, "_is_cryofilter_app_port", lambda _host, _port: True)
+    monkeypatch.setattr(app_server, "_terminate_pids", lambda pids, timeout_s: terminated.extend(pids))
+
+    reclaimed = app_server._reclaim_cryofilter_app_port(host="127.0.0.1", port=8765)
+
+    assert reclaimed == [12345]
+    assert terminated == [12345]
+
+
+def test_app_reclaim_port_ignores_non_cryofilter_process(monkeypatch) -> None:
+    monkeypatch.setattr(app_server, "_listening_pids_for_port", lambda _port: [12345])
+    monkeypatch.setattr(app_server, "_process_owned_by_current_user", lambda _pid: True)
+    monkeypatch.setattr(app_server, "_is_cryofilter_app_port", lambda _host, _port: False)
+    monkeypatch.setattr(app_server, "_process_looks_like_cryofilter_app", lambda _pid: False)
+    monkeypatch.setattr(
+        app_server,
+        "_terminate_pids",
+        lambda _pids, timeout_s: pytest.fail("non-cryoFILTER process should not be terminated"),
+    )
+
+    assert app_server._reclaim_cryofilter_app_port(host="127.0.0.1", port=8765) == []
 
 
 def test_infer_job_spec_builds_cli_command(tmp_path: Path) -> None:

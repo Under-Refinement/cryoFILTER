@@ -5,11 +5,13 @@ from __future__ import annotations
 import argparse
 import csv
 import errno
+import http.client
 import json
 import mimetypes
 import os
 import platform
 import shlex
+import signal
 import socket
 import subprocess
 import sys
@@ -68,6 +70,19 @@ def add_subparser(subparsers: argparse._SubParsersAction) -> None:
     app.add_argument("--host", default="127.0.0.1", help="Bind address. Default: localhost only.")
     app.add_argument("--port", type=int, default=8765, help="Port for the local web app.")
     app.add_argument(
+        "--reclaim-port",
+        dest="reclaim_port",
+        action="store_true",
+        default=True,
+        help="Stop an existing cryoFILTER app on the requested localhost port before binding. Default: on.",
+    )
+    app.add_argument(
+        "--no-reclaim-port",
+        dest="reclaim_port",
+        action="store_false",
+        help="Do not stop an existing cryoFILTER app before binding; use the next available port instead.",
+    )
+    app.add_argument(
         "--work-dir",
         default=".",
         help="Directory where app state and relative workflow outputs are written.",
@@ -77,16 +92,25 @@ def add_subparser(subparsers: argparse._SubParsersAction) -> None:
 
 def run(args: argparse.Namespace) -> int:
     state = AppState(Path(args.work_dir).expanduser().resolve())
+    host = str(args.host)
     requested_port = int(args.port)
+    reclaimed_pids = (
+        _reclaim_cryofilter_app_port(host=host, port=requested_port)
+        if bool(getattr(args, "reclaim_port", True))
+        else []
+    )
     server, bound_port = _bind_app_server(
-        host=str(args.host),
+        host=host,
         port=requested_port,
         handler_cls=make_handler(state),
     )
+    if reclaimed_pids:
+        pids = ", ".join(str(pid) for pid in reclaimed_pids)
+        print(f"Stopped existing cryoFILTER app on port {requested_port} (pid(s): {pids}).", flush=True)
     if requested_port != 0 and bound_port != requested_port:
         print(f"Port {requested_port} is in use; using {bound_port} instead.", flush=True)
     for line in _app_startup_lines(
-        host=str(args.host),
+        host=host,
         requested_port=requested_port,
         bound_port=bound_port,
         state_dir=state.data_dir,
@@ -99,6 +123,138 @@ def run(args: argparse.Namespace) -> int:
     finally:
         server.server_close()
     return 0
+
+
+def _reclaim_cryofilter_app_port(
+    *,
+    host: str,
+    port: int,
+    timeout_s: float = 3.0,
+) -> list[int]:
+    if port <= 0 or host not in LOCALHOST_NAMES:
+        return []
+    pids = _listening_pids_for_port(port)
+    if not pids:
+        return []
+    owned_pids = [pid for pid in pids if pid != os.getpid() and _process_owned_by_current_user(pid)]
+    if not owned_pids:
+        return []
+    is_cryofilter = _is_cryofilter_app_port(host, port) or any(
+        _process_looks_like_cryofilter_app(pid) for pid in owned_pids
+    )
+    if not is_cryofilter:
+        return []
+    _terminate_pids(owned_pids, timeout_s=timeout_s)
+    remaining = set(_listening_pids_for_port(port))
+    return [pid for pid in owned_pids if pid not in remaining]
+
+
+def _is_cryofilter_app_port(host: str, port: int, *, timeout_s: float = 0.35) -> bool:
+    connection: http.client.HTTPConnection | None = None
+    try:
+        connection = http.client.HTTPConnection(host, port, timeout=timeout_s)
+        connection.request("GET", "/api/status")
+        response = connection.getresponse()
+        server_header = response.getheader("Server", "")
+        response.read(512)
+        return "cryoFILTERApp/" in server_header
+    except Exception:
+        return False
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def _listening_pids_for_port(port: int) -> list[int]:
+    inodes = _listening_socket_inodes_for_port(port)
+    if not inodes:
+        return []
+    pids: set[int] = set()
+    proc = Path("/proc")
+    if not proc.exists():
+        return []
+    for fd_dir in proc.glob("[0-9]*/fd"):
+        try:
+            pid = int(fd_dir.parent.name)
+        except ValueError:
+            continue
+        try:
+            fd_paths = list(fd_dir.iterdir())
+        except OSError:
+            continue
+        for fd_path in fd_paths:
+            try:
+                target = os.readlink(fd_path)
+            except OSError:
+                continue
+            if target.startswith("socket:[") and target.endswith("]"):
+                inode = target.removeprefix("socket:[").removesuffix("]")
+                if inode in inodes:
+                    pids.add(pid)
+                    break
+    return sorted(pids)
+
+
+def _listening_socket_inodes_for_port(port: int) -> set[str]:
+    inodes: set[str] = set()
+    target_port = f"{int(port):04X}"
+    for proc_file in (Path("/proc/net/tcp"), Path("/proc/net/tcp6")):
+        try:
+            lines = proc_file.read_text(encoding="utf-8").splitlines()[1:]
+        except OSError:
+            continue
+        for line in lines:
+            fields = line.split()
+            if len(fields) < 10 or fields[3] != "0A":
+                continue
+            local_address = fields[1]
+            _, _, local_port = local_address.rpartition(":")
+            if local_port.upper() == target_port:
+                inodes.add(fields[9])
+    return inodes
+
+
+def _process_owned_by_current_user(pid: int) -> bool:
+    try:
+        return Path(f"/proc/{int(pid)}").stat().st_uid == os.getuid()
+    except OSError:
+        return False
+
+
+def _process_looks_like_cryofilter_app(pid: int) -> bool:
+    try:
+        raw = Path(f"/proc/{int(pid)}/cmdline").read_bytes()
+    except OSError:
+        return False
+    command = raw.replace(b"\0", b" ").decode("utf-8", errors="replace").lower()
+    return (
+        "cryofilter" in command
+        and (" app" in command or " studio" in command)
+    )
+
+
+def _terminate_pids(pids: Sequence[int], *, timeout_s: float) -> None:
+    unique_pids = sorted({int(pid) for pid in pids if int(pid) > 0 and int(pid) != os.getpid()})
+    for pid in unique_pids:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            continue
+    deadline = time.monotonic() + max(0.0, float(timeout_s))
+    while time.monotonic() < deadline:
+        if all(not _pid_exists(pid) for pid in unique_pids):
+            return
+        time.sleep(0.05)
+
+
+def _pid_exists(pid: int) -> bool:
+    try:
+        os.kill(int(pid), 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
 
 
 def _app_startup_lines(

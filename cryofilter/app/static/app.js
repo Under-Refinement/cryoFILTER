@@ -91,17 +91,23 @@ function setCryosparcGate(connected, details = {}) {
   const gate = $("#cryosparcGate");
   const runForm = $("#cryosparcRunForm");
   const summary = $("#cryosparcConnectionSummary");
+  const hint = $("#cryosparcCredentialHint");
+  const submitButton = $("#cryosparcConnectForm button[type='submit']");
   if (!gate || !runForm) return;
   state.cryosparcConnected = Boolean(connected);
   gate.classList.toggle("is-locked", !connected);
   runForm.setAttribute("aria-hidden", connected ? "false" : "true");
   if (!connected) {
     summary.textContent = "Not connected";
+    if (hint) hint.textContent = "Connect to continue.";
+    if (submitButton) submitButton.textContent = "Connect";
     return;
   }
   const user = details.email ? ` as ${details.email}` : "";
   const version = details.server_version ? ` | ${details.server_version}` : "";
   summary.textContent = `Connected to ${details.display || details.host || "CryoSPARC"}${user}${version}`;
+  if (hint) hint.textContent = "Connected.";
+  if (submitButton) submitButton.textContent = "Reconnect";
 }
 
 function syncCryosparcRunCredentials(payload) {
