@@ -133,23 +133,23 @@ def test_app_static_files_are_not_cached(tmp_path: Path) -> None:
         thread.join(timeout=2)
 
 
-def test_cryosparc_connect_button_uses_explicit_handler() -> None:
+def test_cryosparc_connect_button_uses_restored_submit_handler() -> None:
     static_root = Path(__file__).resolve().parents[1] / "cryofilter" / "app" / "static"
     html = (static_root / "index.html").read_text(encoding="utf-8")
     script = (static_root / "app.js").read_text(encoding="utf-8")
 
-    assert '<div id="cryosparcConnectForm"' in html
-    assert '<form id="cryosparcConnectForm"' not in html
+    styles = (static_root / "styles.css").read_text(encoding="utf-8")
+
+    assert '<form id="cryosparcConnectForm"' in html
     assert 'id="cryosparcConnectButton"' in html
     assert 'class="primary"' in html
-    assert 'type="button"' in html
+    assert 'type="submit"' in html
     assert "onsubmit=" not in html
     assert "onclick=" not in html
-    assert "function bindCryosparcConnectControl()" in script
-    assert 'form.querySelectorAll("input, select, textarea")' in script
-    assert 'form.addEventListener("submit", handleCryosparcConnectEvent, true)' in script
-    assert '$("#cryosparcConnectButton")?.addEventListener("click", handleCryosparcConnectEvent, true)' in script
-    assert 'form.addEventListener("keydown"' in script
+    assert '$("#cryosparcConnectForm")?.addEventListener("submit", async (event) => {' in script
+    assert "await connectCryosparc(event.currentTarget)" in script
+    assert ".cryosparc-gate.is-locked::before" in styles
+    assert "pointer-events: none;" in styles
 
 
 def test_infer_job_spec_builds_cli_command(tmp_path: Path) -> None:

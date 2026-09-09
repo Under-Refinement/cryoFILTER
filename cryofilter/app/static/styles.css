@@ -670,6 +670,7 @@ button {
   position: absolute;
   inset: -20px;
   z-index: 2;
+  pointer-events: none;
   background: rgba(7, 12, 16, 0.58);
   backdrop-filter: blur(2px);
 }
