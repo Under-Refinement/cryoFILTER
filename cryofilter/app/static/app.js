@@ -122,7 +122,7 @@ function syncCryosparcRunCredentials(payload) {
 async function connectCryosparc(form) {
   if (form.dataset.busy === "1") return;
   const payload = formPayload(form);
-  const button = form.querySelector('button[type="submit"]');
+  const button = $("#cryosparcConnectButton") || form.querySelector('button[type="submit"]');
   form.dataset.busy = "1";
   if (button) button.disabled = true;
   setCryosparcStatus("Checking connection...");

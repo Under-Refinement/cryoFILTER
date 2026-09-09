@@ -139,7 +139,10 @@ def test_cryosparc_connect_button_uses_explicit_handler() -> None:
     )
 
     assert 'id="cryosparcConnectButton"' in html
-    assert 'type="button"' in html
+    assert 'class="primary"' in html
+    assert 'type="submit"' in html
+    assert "onsubmit=" in html
+    assert "onclick=" in html
     assert "window.cryoFilterConnectCryosparc" in html
 
 
