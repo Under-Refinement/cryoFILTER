@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
-    <link rel="stylesheet" href="/static/styles.css?v=20260909-cryosparc-submit-fix" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260909-cryosparc-connect-direct" />
   </head>
   <body>
     <div class="shell">
@@ -208,7 +208,7 @@
                 </details>
               </form>
             </div>
-            <form id="cryosparcConnectForm" class="credential-card" autocomplete="on" onsubmit="window.cryoFilterConnectCryosparc && window.cryoFilterConnectCryosparc(event); return false">
+            <form id="cryosparcConnectForm" class="credential-card" autocomplete="on">
               <div class="credential-head">
                 <h2>CryoSPARC</h2>
                 <p id="cryosparcCredentialHint">Connect to continue.</p>
@@ -217,7 +217,7 @@
               <label><span class="label-row">Username/email <span class="help" tabindex="0" data-tip="CryoSPARC login name or email. Leave blank only when your environment or config already provides it.">?</span></span><input name="cryosparc_email" autocomplete="username" placeholder="user@example.edu" /></label>
               <label><span class="label-row">Password <span class="help" tabindex="0" data-tip="CryoSPARC password. It is checked once and then passed to launched jobs without being saved in app state.">?</span></span><input name="cryosparc_password" type="password" autocomplete="current-password" /></label>
               <div class="credential-actions">
-                <button id="cryosparcConnectButton" class="primary" type="submit" onclick="window.cryoFilterConnectCryosparc && window.cryoFilterConnectCryosparc(event); return false">Connect</button>
+                <button id="cryosparcConnectButton" class="primary" type="submit">Connect</button>
               </div>
               <p id="cryosparcConnectStatus" class="credential-status" role="status" aria-live="polite"></p>
             </form>
@@ -357,6 +357,6 @@
         </section>
       </main>
     </div>
-    <script src="/static/app.js?v=20260909-cryosparc-submit-fix"></script>
+    <script src="/static/app.js?v=20260909-cryosparc-connect-direct"></script>
   </body>
 </html>

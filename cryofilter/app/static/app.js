@@ -124,7 +124,10 @@ async function connectCryosparc(form) {
   const payload = formPayload(form);
   const button = $("#cryosparcConnectButton") || form.querySelector('button[type="submit"]');
   form.dataset.busy = "1";
-  if (button) button.disabled = true;
+  if (button) {
+    button.disabled = true;
+    button.textContent = "Checking...";
+  }
   setCryosparcStatus("Checking connection...");
   try {
     const result = await api("/api/cryosparc/connect", {
@@ -139,7 +142,10 @@ async function connectCryosparc(form) {
   } catch (error) {
     setCryosparcStatus(error.message, "error");
   } finally {
-    if (button) button.disabled = false;
+    if (button) {
+      button.disabled = false;
+      button.textContent = state.cryosparcConnected ? "Reconnect" : "Connect";
+    }
     delete form.dataset.busy;
   }
 }
@@ -154,8 +160,11 @@ function resetCryosparcConnection() {
 }
 
 async function handleCryosparcConnectEvent(event) {
-  event?.preventDefault();
-  event?.stopPropagation();
+  if (event) {
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.stopImmediatePropagation) event.stopImmediatePropagation();
+  }
   const form = $("#cryosparcConnectForm");
   if (!form) return false;
   if (form.reportValidity && !form.reportValidity()) return false;
@@ -163,7 +172,23 @@ async function handleCryosparcConnectEvent(event) {
   return false;
 }
 
-window.cryoFilterConnectCryosparc = handleCryosparcConnectEvent;
+function bindCryosparcConnectControl() {
+  const form = $("#cryosparcConnectForm");
+  if (!form || form.dataset.connectBound === "1") return;
+  form.dataset.connectBound = "1";
+  form.addEventListener("submit", handleCryosparcConnectEvent, true);
+  $("#cryosparcConnectButton")?.addEventListener("click", handleCryosparcConnectEvent, true);
+}
+
+function installCryosparcConnectControl() {
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", bindCryosparcConnectControl, { once: true });
+    return;
+  }
+  bindCryosparcConnectControl();
+}
+
+installCryosparcConnectControl();
 
 function updateAnnotationSourceFields() {
   const form = $("#annotationForm");
@@ -2231,16 +2256,7 @@ function bindForms() {
 }
 
 function bindControls() {
-  const cryosparcConnectForm = $("#cryosparcConnectForm");
-  cryosparcConnectForm?.addEventListener("submit", async (event) => {
-    await handleCryosparcConnectEvent(event);
-  }, true);
-  $("#cryosparcConnectButton")?.addEventListener("click", handleCryosparcConnectEvent);
-  document.addEventListener("click", async (event) => {
-    if (event.target?.closest?.("#cryosparcConnectButton")) {
-      await handleCryosparcConnectEvent(event);
-    }
-  }, true);
+  bindCryosparcConnectControl();
   $$("[data-action='change-cryosparc']").forEach((button) => {
     button.addEventListener("click", resetCryosparcConnection);
   });

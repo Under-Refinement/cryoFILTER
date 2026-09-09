@@ -134,16 +134,18 @@ def test_app_static_files_are_not_cached(tmp_path: Path) -> None:
 
 
 def test_cryosparc_connect_button_uses_explicit_handler() -> None:
-    html = (Path(__file__).resolve().parents[1] / "cryofilter" / "app" / "static" / "index.html").read_text(
-        encoding="utf-8"
-    )
+    static_root = Path(__file__).resolve().parents[1] / "cryofilter" / "app" / "static"
+    html = (static_root / "index.html").read_text(encoding="utf-8")
+    script = (static_root / "app.js").read_text(encoding="utf-8")
 
     assert 'id="cryosparcConnectButton"' in html
     assert 'class="primary"' in html
     assert 'type="submit"' in html
-    assert "onsubmit=" in html
-    assert "onclick=" in html
-    assert "window.cryoFilterConnectCryosparc" in html
+    assert "onsubmit=" not in html
+    assert "onclick=" not in html
+    assert "function bindCryosparcConnectControl()" in script
+    assert 'form.addEventListener("submit", handleCryosparcConnectEvent, true)' in script
+    assert '$("#cryosparcConnectButton")?.addEventListener("click", handleCryosparcConnectEvent, true)' in script
 
 
 def test_infer_job_spec_builds_cli_command(tmp_path: Path) -> None:
