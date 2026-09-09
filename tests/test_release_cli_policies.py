@@ -35,6 +35,18 @@ from utils.small_pixel_policy import (
     resolve_small_pixel_inference_policy,
 )
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_install_environment_includes_cryosparc_tools() -> None:
+    environment_text = (REPO_ROOT / "environment.yml").read_text(encoding="utf-8")
+    pyproject_text = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+
+    assert "cryosparc-tools>=4.1" in environment_text
+    assert "cryosparc-bridge" in pyproject_text
+    assert "cryosparc-tools>=4.1" in pyproject_text
+    assert "cryofilter-install-cryosparc-tools" in pyproject_text
+
 
 def _policy_for_pixel_size(
     pixel_size_angstrom: float,
@@ -316,6 +328,7 @@ def test_public_cli_contains_only_documented_workflows() -> None:
         "filter-particles",
         "gui",
         "infer",
+        "install-cryosparc-tools",
         "studio",
         "train",
         "type",

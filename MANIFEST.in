@@ -28,6 +28,7 @@ include tests/test_cryosparc_protocol.py
 include tests/test_cryosparc_transport.py
 include tests/test_frequency_band_checkpoint_config.py
 include tests/test_gui.py
+include tests/test_install_cryosparc_tools.py
 include tests/test_particle_filtering.py
 include tests/test_qc_render.py
 include tests/test_release_cli_policies.py

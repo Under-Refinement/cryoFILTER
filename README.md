@@ -29,7 +29,27 @@ git clone https://github.com/Under-Refinement/cryoFILTER.git
 cd cryoFILTER
 conda env create -f environment.yml
 conda activate cryofilter
-pip install -e ".[cryosparc-bridge]"
+python -m pip install -e .
+cryoFILTER install-cryosparc-tools
+```
+
+The CryoSPARC Tools helper shows a command-line version menu. Select your
+CryoSPARC server minor version, such as `5.0` for CryoSPARC `5.0.x` or `4.7`
+for CryoSPARC `4.7.x`, and it installs the matching `cryosparc-tools` package.
+Press Enter to skip matching and install the latest `cryosparc-tools` release;
+the helper will warn that Tools should match the server minor version.
+
+For scripted installs, pass the version directly:
+
+```bash
+cryoFILTER install-cryosparc-tools --cryosparc-version 5.0
+```
+
+The noninteractive extra remains available when you deliberately want pip to
+install the latest available Tools package:
+
+```bash
+python -m pip install -e ".[cryosparc-bridge]"
 ```
 
 Download the released `cryoFILTER_FULL.pt` checkpoint from Zenodo:
@@ -44,12 +64,12 @@ Then place the file here:
 pretrained_models/cryoFILTER_FULL.pt
 ```
 
-Use `pip install -e .` if you do not need CryoSPARC integration. If your cluster requires a specific CUDA build, install the matching PyTorch and torchvision packages before installing cryoFILTER.
+Use `python -m pip install -e .` without the helper if you do not need CryoSPARC integration. If your cluster requires a specific CUDA build, install the matching PyTorch and torchvision packages before installing cryoFILTER.
 
 The browser app and browser-native Annotation tab do not require Qt. Install the optional desktop GUI fallback only if you want the older matplotlib window:
 
 ```bash
-pip install -e ".[gui]"
+python -m pip install -e ".[gui]"
 ```
 
 ## Launch The App

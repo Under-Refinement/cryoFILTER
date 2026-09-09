@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import builtins
 import csv
 import json
 import subprocess
@@ -128,6 +129,24 @@ def test_bridge_argv_uses_module_for_local_default_bridge() -> None:
     ]
 
 
+def test_bridge_argv_passes_configured_bridge_python_to_deployed_launcher() -> None:
+    config = CryoSPARCIntegrationConfig(
+        api=CryoSPARCApiConfig(base_url="http://cryosparc.example.edu:39000"),
+        bridge=BridgeConfig(
+            command="/shared/path/cryofilter_bridge_src/bin/cryofilter-bridge",
+            python="/shared/path/venvs/cryofilter-bridge/bin/python",
+        ),
+    )
+
+    argv = _bridge_argv(config, "--version")
+
+    assert "CRYOFILTER_BRIDGE_PYTHON=/shared/path/venvs/cryofilter-bridge/bin/python" in argv
+    assert argv[-2:] == [
+        "/shared/path/cryofilter_bridge_src/bin/cryofilter-bridge",
+        "--version",
+    ]
+
+
 def test_bridge_environment_base_url_excludes_split_host_and_port() -> None:
     config = CryoSPARCIntegrationConfig(
         api=CryoSPARCApiConfig(
@@ -179,6 +198,30 @@ def test_connection_kwargs_base_url_ignores_inherited_split_env(
     assert kwargs["email"] == "user@example.edu"
     assert "host" not in kwargs
     assert "base_port" not in kwargs
+
+
+def test_missing_cryosparc_tools_error_is_actionable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from cryofilter.cryosparc.bridge import client as bridge_client
+
+    real_import = builtins.__import__
+
+    def fake_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name in {"cryosparc", "cryosparc_tools"} or name.startswith(
+            ("cryosparc.", "cryosparc_tools.")
+        ):
+            missing_root = name.split(".", 1)[0]
+            raise ModuleNotFoundError(
+                f"No module named {missing_root!r}",
+                name=missing_root,
+            )
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+
+    with pytest.raises(ModuleNotFoundError, match="cryosparc-bridge"):
+        bridge_client.import_cryosparc_class()
 
 
 def test_parser_keeps_run_typing_unset_until_explicit(tmp_path: Path) -> None:

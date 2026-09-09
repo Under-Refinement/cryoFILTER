@@ -16,6 +16,39 @@ The SSH host does not need to be the CryoSPARC master. It only needs Python,
 `cryosparc-tools`, access to the CryoSPARC API, and filesystem visibility of the
 project directories referenced by CryoSPARC datasets.
 
+## Environment
+
+Create the local cryoFILTER environment, then align CryoSPARC Tools with your
+server version:
+
+```bash
+conda env create -f environment.yml
+conda activate cryofilter
+python -m pip install -e .
+cryoFILTER install-cryosparc-tools
+```
+
+The helper shows a command-line menu of `cryosparc-tools` minor-version
+families available from PyPI. Select the minor version matching your CryoSPARC
+server, or pass it directly for scripted installs:
+
+```bash
+cryoFILTER install-cryosparc-tools --cryosparc-version 5.0
+```
+
+Press Enter in the helper, or pass `--latest`, to install the latest
+`cryosparc-tools` release with a compatibility warning. CryoSPARC recommends
+matching Tools to the CryoSPARC minor release at your site: for CryoSPARC
+`vX.Y.Z`, use the latest `vX.Y` Tools package, and the `Z` component does not
+need to match.
+
+The bridge host must run a Python environment with `cryosparc-tools` and
+`pydantic` available. `deploy-bridge` copies the cryoFILTER bridge source bundle
+to the remote host; it does not create or modify the remote Python environment.
+When using the deployed source-bundle launcher, set `[cryosparc.bridge].python`
+to the Python executable from that prepared environment and
+`[cryosparc.bridge].command` to the deployed `bin/cryofilter-bridge` launcher.
+
 ## Configuration
 
 Start from `docs/cryosparc/cryosparc.example.toml` and replace the placeholders:

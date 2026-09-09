@@ -35,6 +35,7 @@ cryoFILTER = "cryofilter.cli:main"
 cryofilter = "cryofilter.cli:main"
 cryofilter-inference = "cryofilter.simple_inference:main"
 cryofilter-bridge = "cryofilter.cryosparc.bridge.cli:main"
+cryofilter-install-cryosparc-tools = "cryofilter.install_cryosparc_tools:main"
 
 [project.optional-dependencies]
 cryosparc-bridge = [

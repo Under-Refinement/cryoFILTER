@@ -20,6 +20,7 @@ from cryofilter.training import add_subparser as add_train_subparser
 from cryofilter.training import run as run_train
 from cryofilter.gui import add_subparser as add_gui_subparser
 from cryofilter.gui import run as run_gui
+from cryofilter.install_cryosparc_tools import add_subparser as add_install_cryosparc_tools_subparser
 from utils.small_pixel_policy import (
     DEFAULT_INFERENCE_PROFILE,
     DEFAULT_SMALL_PIXEL_CUTOFF_ANGSTROM,
@@ -2709,6 +2710,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     add_type_subparser(subparsers)
     add_gui_subparser(subparsers)
+    add_install_cryosparc_tools_subparser(subparsers)
     add_cryosparc_subparser(subparsers)
     add_app_subparser(subparsers)
 
@@ -2733,6 +2735,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return run_type(args)
     if args.command == "gui":
         return run_gui(args)
+    if args.command == "install-cryosparc-tools":
+        return args.func(args)
     if args.command == "cryosparc":
         return args.func(args)
     if args.command in {"app", "studio"}:

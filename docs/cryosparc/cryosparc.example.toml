@@ -17,7 +17,10 @@ email = "user@example.edu"
 options = ""
 
 [cryosparc.bridge]
-python = "/usr/bin/python3"
+# Python executable from an environment with pydantic and cryosparc-tools
+# installed. Match cryosparc-tools to your CryoSPARC minor release when needed,
+# for example: cryoFILTER install-cryosparc-tools --cryosparc-version 5.0
+python = "/shared/path/venvs/cryofilter-bridge/bin/python"
 command = "/shared/path/cryofilter_bridge_src/bin/cryofilter-bridge"
 remote_work_root = "/shared/path/cryofilter_bridge_work"
 remote_source_root = "/shared/path/cryofilter_bridge_src"

@@ -422,16 +422,19 @@ def _transport(config: CryoSPARCIntegrationConfig) -> RemoteTransport:
 
 
 def _bridge_argv(config: CryoSPARCIntegrationConfig, *args: str) -> list[str]:
-    if (
+    use_local_module = (
         str(config.host).lower() in {"local", "localhost", "127.0.0.1", "::1"}
         and config.bridge.command == BridgeConfig().command
-    ):
+    )
+    if use_local_module:
         argv = [sys.executable, "-m", "cryofilter.cryosparc.bridge.cli", *args]
     else:
         argv = [config.bridge.command, *args]
     if config.bridge.connection_file and args and not str(args[0]).startswith("--"):
         argv.extend(["--connection-file", config.bridge.connection_file])
     bridge_env = _bridge_environment(config)
+    if not use_local_module and config.bridge.python != BridgeConfig().python:
+        bridge_env["CRYOFILTER_BRIDGE_PYTHON"] = config.bridge.python
     if bridge_env:
         argv = ["env", *[f"{key}={value}" for key, value in bridge_env.items()], *argv]
     return argv

@@ -23,14 +23,31 @@ def cryosparc_tools_version() -> str | None:
 def import_cryosparc_class():
     """Import CryoSPARC from supported package layouts."""
 
+    first_missing: ModuleNotFoundError | None = None
     try:
         from cryosparc.tools import CryoSPARC
 
         return CryoSPARC
-    except ModuleNotFoundError:
+    except ModuleNotFoundError as first_exc:
+        if first_exc.name != "cryosparc":
+            raise
+        first_missing = first_exc
+
+    try:
         from cryosparc_tools.cryosparc.tools import CryoSPARC
 
         return CryoSPARC
+    except ModuleNotFoundError as second_exc:
+        if second_exc.name != "cryosparc_tools":
+            raise
+        raise ModuleNotFoundError(
+            "cryoFILTER CryoSPARC integration requires cryosparc-tools in this "
+            "Python environment. Run "
+            "`cryoFILTER install-cryosparc-tools --cryosparc-version X.Y` "
+            "with your CryoSPARC server minor version, or install the "
+            "noninteractive extra with "
+            '`python -m pip install -e ".[cryosparc-bridge]"`.'
+        ) from first_missing
 
 
 def _read_connection_file(path: str | Path) -> dict[str, Any]:

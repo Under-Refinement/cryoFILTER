@@ -27,3 +27,4 @@ dependencies:
     - pyyaml
     - Pillow>=9.0.0
     - pydantic>=2.0
+    - "cryosparc-tools>=4.1"
