@@ -133,6 +133,16 @@ def test_app_static_files_are_not_cached(tmp_path: Path) -> None:
         thread.join(timeout=2)
 
 
+def test_cryosparc_connect_button_uses_explicit_handler() -> None:
+    html = (Path(__file__).resolve().parents[1] / "cryofilter" / "app" / "static" / "index.html").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'id="cryosparcConnectButton"' in html
+    assert 'type="button"' in html
+    assert "window.cryoFilterConnectCryosparc" in html
+
+
 def test_infer_job_spec_builds_cli_command(tmp_path: Path) -> None:
     spec = build_job_spec(
         "infer",

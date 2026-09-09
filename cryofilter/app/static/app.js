@@ -92,7 +92,7 @@ function setCryosparcGate(connected, details = {}) {
   const runForm = $("#cryosparcRunForm");
   const summary = $("#cryosparcConnectionSummary");
   const hint = $("#cryosparcCredentialHint");
-  const submitButton = $("#cryosparcConnectForm button[type='submit']");
+  const submitButton = $("#cryosparcConnectButton");
   if (!gate || !runForm) return;
   state.cryosparcConnected = Boolean(connected);
   gate.classList.toggle("is-locked", !connected);
@@ -149,9 +149,21 @@ function resetCryosparcConnection() {
   const connectForm = $("#cryosparcConnectForm");
   if (connectForm?.elements.cryosparc_password) connectForm.elements.cryosparc_password.value = "";
   setCryosparcGate(false);
-  setCryosparcStatus("");
+  setCryosparcStatus("Ready to connect.");
   $("#cryosparcConnectForm input[name='cryosparc_base_url']")?.focus();
 }
+
+async function handleCryosparcConnectEvent(event) {
+  event?.preventDefault();
+  event?.stopPropagation();
+  const form = $("#cryosparcConnectForm");
+  if (!form) return false;
+  if (form.reportValidity && !form.reportValidity()) return false;
+  await connectCryosparc(form);
+  return false;
+}
+
+window.cryoFilterConnectCryosparc = handleCryosparcConnectEvent;
 
 function updateAnnotationSourceFields() {
   const form = $("#annotationForm");
@@ -2221,16 +2233,14 @@ function bindForms() {
 function bindControls() {
   const cryosparcConnectForm = $("#cryosparcConnectForm");
   cryosparcConnectForm?.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    event.stopPropagation();
-    await connectCryosparc(event.currentTarget);
+    await handleCryosparcConnectEvent(event);
   }, true);
-  cryosparcConnectForm?.querySelector('button[type="submit"]')?.addEventListener("click", async (event) => {
-    event.preventDefault();
-    event.stopPropagation();
-    if (cryosparcConnectForm.reportValidity && !cryosparcConnectForm.reportValidity()) return;
-    await connectCryosparc(cryosparcConnectForm);
-  });
+  $("#cryosparcConnectButton")?.addEventListener("click", handleCryosparcConnectEvent);
+  document.addEventListener("click", async (event) => {
+    if (event.target?.closest?.("#cryosparcConnectButton")) {
+      await handleCryosparcConnectEvent(event);
+    }
+  }, true);
   $$("[data-action='change-cryosparc']").forEach((button) => {
     button.addEventListener("click", resetCryosparcConnection);
   });
@@ -2330,6 +2340,7 @@ async function boot() {
   bindTabs();
   bindForms();
   bindControls();
+  setCryosparcStatus("Ready to connect.");
   updateAnnotationSourceFields();
   updateTrainingMicrographSourceFields();
   syncAnnotationActionControls();
