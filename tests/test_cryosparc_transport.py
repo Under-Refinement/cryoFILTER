@@ -7,6 +7,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from cryofilter.cryosparc.bridge.client import connection_kwargs
@@ -781,6 +782,67 @@ def test_write_typing_manifest_from_transfer_pairs_micrographs_and_masks(tmp_pat
     assert rows[0]["micrograph_path"].endswith("/transfer/micrographs/7_example.mrc")
     assert rows[0]["binary_mask_path"].endswith("/inference/7_example_mask.npy")
     assert rows[0]["pixel_size_angstrom"] == "1.5"
+
+
+def test_cryosparc_helpers_find_internal_masks_when_exports_are_disabled(tmp_path: Path) -> None:
+    run_id = "00000000-0000-0000-0000-000000000014"
+    transfer = tmp_path / "transfer"
+    (transfer / "micrographs").mkdir(parents=True)
+    (transfer / "micrographs" / "7_example.mrc").write_bytes(b"not-used-because-geometry-is-in-manifest")
+    inference = tmp_path / "inference"
+    internal = inference / ".cryofilter_internal_maps"
+    internal.mkdir(parents=True)
+    mask = np.zeros((10, 10), dtype=bool)
+    mask[2, 2] = True
+    np.save(internal / "7_example_mask.npy", mask)
+    manifest_path = tmp_path / "transfer_manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "protocol_version": 1,
+                "run_id": run_id,
+                "project_uid": "P1",
+                "workspace_uid": "W2",
+                "external_job_uid": "J9",
+                "micrographs": [
+                    {
+                        "uid": 7,
+                        "transfer_filename": "micrographs/7_example.mrc",
+                        "source_path": "/project/example.mrc",
+                        "shape_yx": [10, 10],
+                        "pixel_size_angstrom": 1.0,
+                    }
+                ],
+                "particles": [
+                    {"uid": 11, "micrograph_uid": 7, "center_x_frac": 0.2, "center_y_frac": 0.2},
+                    {"uid": 12, "micrograph_uid": 7, "center_x_frac": 0.8, "center_y_frac": 0.8},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    output_csv = tmp_path / "typing_manifest.csv"
+    info = predict_helpers.write_typing_manifest_from_transfer(
+        transfer_manifest_file=manifest_path,
+        local_transfer_dir=transfer,
+        inference_dir=inference,
+        manifest_path=output_csv,
+        dataset_id="P1_W2",
+    )
+    split = predict_helpers.classify_particles_from_manifest(
+        transfer_manifest_file=manifest_path,
+        local_transfer_dir=transfer,
+        inference_dir=inference,
+        exclusion_distance_angstrom=0.0,
+    )
+
+    assert info["images"] == 1
+    with output_csv.open(encoding="utf-8", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    assert rows[0]["binary_mask_path"].endswith("/inference/.cryofilter_internal_maps/7_example_mask.npy")
+    assert split["accepted_uids"] == [12]
+    assert split["rejected_uids"] == [11]
 
 
 def test_run_local_typing_builds_command(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

@@ -146,6 +146,8 @@ def test_infer_parser_aliases_and_safer_defaults() -> None:
     assert args.skip_existing is True
     assert args.small_pixel_auto is True
     assert args.gpus == ""
+    assert args.export_masks is True
+    assert args.no_resample is False
     assert args.render_images is False
     assert args.image_output_dir is None
     assert args.image_max_dim == 1400
@@ -196,6 +198,9 @@ def test_infer_parser_aliases_and_safer_defaults() -> None:
         ]
     )
     assert disabled.render_particle_overlays is False
+
+    no_export = parser.parse_args(["infer", "--input-directory", "mic_dir", "--no-export-masks"])
+    assert no_export.export_masks is False
 
 
 def test_multi_gpu_parser_sharding_and_summary_order(tmp_path: Path, monkeypatch) -> None:

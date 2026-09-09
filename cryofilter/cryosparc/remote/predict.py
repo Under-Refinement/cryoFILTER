@@ -14,6 +14,8 @@ from typing import Any, Mapping, Sequence
 from cryofilter.cryosparc import PROTOCOL_VERSION
 from cryofilter.cryosparc.protocol.validation import validate_uid_partition
 
+INTERNAL_MAP_OUTPUT_SUBDIR = ".cryofilter_internal_maps"
+
 
 def load_transfer_manifest(path: str | Path) -> dict[str, Any]:
     """Load a transfer manifest without requiring Pydantic in lightweight test shells."""
@@ -26,6 +28,16 @@ def load_transfer_manifest(path: str | Path) -> dict[str, Any]:
 
 def _manifest_micrograph_path(local_transfer_dir: Path, entry: dict[str, Any]) -> Path:
     return (local_transfer_dir / str(entry["transfer_filename"])).expanduser().resolve()
+
+
+def _mask_output_path(mask_dir: Path, stem: str) -> Path:
+    direct_path = mask_dir / f"{stem}_mask.npy"
+    if direct_path.exists():
+        return direct_path
+    internal_path = mask_dir / INTERNAL_MAP_OUTPUT_SUBDIR / f"{stem}_mask.npy"
+    if internal_path.exists():
+        return internal_path
+    return direct_path
 
 
 def _read_mrc_geometry(path: Path) -> tuple[tuple[int, int], float | None]:
@@ -224,7 +236,7 @@ def write_typing_manifest_from_transfer(
         if not isinstance(entry, dict):
             continue
         local_path = _manifest_micrograph_path(transfer_dir, entry)
-        mask_path = mask_dir / f"{local_path.stem}_mask.npy"
+        mask_path = _mask_output_path(mask_dir, local_path.stem)
         if not mask_path.exists():
             missing_masks.append(str(mask_path))
             continue
@@ -345,7 +357,7 @@ def classify_particles_from_manifest(
         if not micrograph_particles:
             continue
         local_path = _manifest_micrograph_path(transfer_dir, entry)
-        mask_path = mask_dir / f"{local_path.stem}_mask.npy"
+        mask_path = _mask_output_path(mask_dir, local_path.stem)
         if not mask_path.exists():
             raise FileNotFoundError(f"Final cryoFILTER mask not found: {mask_path}")
         height, width = _shape_yx(entry, local_path)

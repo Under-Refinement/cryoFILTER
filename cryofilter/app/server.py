@@ -465,6 +465,8 @@ def _build_infer_spec(payload: dict[str, Any], *, work_dir: Path) -> JobSpec:
     output_dir = Path(
         _optional_str(payload.get("output_dir")) or str(work_dir / "cryofilter_output")
     ).expanduser()
+    export_masks = _as_bool(payload.get("export_masks"), default=True)
+    binned_masks = _as_bool(payload.get("binned_masks"), default=True)
     argv = [
         sys.executable,
         "-m",
@@ -492,6 +494,10 @@ def _build_infer_spec(payload: dict[str, Any], *, work_dir: Path) -> JobSpec:
         argv.append("--render-particle-overlays")
     else:
         argv.append("--no-render-particle-overlays")
+    if not export_masks:
+        argv.append("--no-export-masks")
+    if binned_masks:
+        argv.append("--no-resample")
     argv.extend(_as_tokens(payload.get("extra_args")))
     return JobSpec(
         kind="infer",
@@ -503,6 +509,8 @@ def _build_infer_spec(payload: dict[str, Any], *, work_dir: Path) -> JobSpec:
             "output_dir": output_dir,
             "num_cpus": payload.get("num_cpus"),
             "num_gpus": payload.get("num_gpus"),
+            "export_masks": export_masks,
+            "binned_masks": binned_masks,
         },
     )
 
@@ -636,7 +644,9 @@ def _build_cryosparc_predict_spec(payload: dict[str, Any], *, work_dir: Path) ->
     device = _optional_str(payload.get("device"))
     profile = _optional_str(payload.get("inference_profile"))
     batch_forward_size = _optional_str(payload.get("batch_forward_size"))
-    if device or profile or batch_forward_size or infer_args:
+    export_masks = _as_bool(payload.get("export_masks"), default=True)
+    binned_masks = _as_bool(payload.get("binned_masks"), default=True)
+    if device or profile or batch_forward_size or infer_args or not export_masks or binned_masks:
         argv.append("--")
         if device:
             argv.extend(["--device", device])
@@ -644,6 +654,10 @@ def _build_cryosparc_predict_spec(payload: dict[str, Any], *, work_dir: Path) ->
             argv.extend(["--inference-profile", profile])
         if batch_forward_size:
             argv.extend(["--batch-forward-size", batch_forward_size])
+        if not export_masks:
+            argv.append("--no-export-masks")
+        if binned_masks:
+            argv.append("--no-resample")
         argv.extend(infer_args)
 
     run_root = Path(
@@ -667,6 +681,8 @@ def _build_cryosparc_predict_spec(payload: dict[str, Any], *, work_dir: Path) ->
             "run_typing": _as_bool(payload.get("run_typing"), default=True),
             "num_cpus": payload.get("num_cpus"),
             "num_gpus": payload.get("num_gpus"),
+            "export_masks": export_masks,
+            "binned_masks": binned_masks,
         },
         env=secret_env,
     )

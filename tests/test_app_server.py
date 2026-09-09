@@ -57,8 +57,33 @@ def test_infer_job_spec_builds_cli_command(tmp_path: Path) -> None:
     assert argv[argv.index("--num-gpus") + 1] == "1"
     assert "--recursive" in argv
     assert "--render-particle-overlays" in argv
+    assert "--no-export-masks" not in argv
+    assert "--no-resample" in argv
     assert "--batch-forward-size" in argv
+    assert spec.metadata["export_masks"] is True
+    assert spec.metadata["binned_masks"] is True
     assert spec.artifact_roots == [tmp_path / "out"]
+
+
+def test_infer_job_spec_can_disable_visible_mask_exports(tmp_path: Path) -> None:
+    spec = build_job_spec(
+        "infer",
+        {
+            "input": "/data/micrographs",
+            "output_dir": str(tmp_path / "out"),
+            "export_masks": False,
+            "binned_masks": False,
+            "render_overlays": False,
+        },
+        work_dir=tmp_path,
+    )
+
+    argv = spec.steps[0].argv
+    assert "--no-export-masks" in argv
+    assert "--no-resample" not in argv
+    assert "--no-render-particle-overlays" in argv
+    assert spec.metadata["export_masks"] is False
+    assert spec.metadata["binned_masks"] is False
 
 
 def test_cryosparc_predict_job_spec_uses_typing_default(tmp_path: Path) -> None:
@@ -97,9 +122,36 @@ def test_cryosparc_predict_job_spec_uses_typing_default(tmp_path: Path) -> None:
     assert "--" in argv
     assert argv[argv.index("--device") + 1] == "cuda"
     assert argv[argv.index("--inference-profile") + 1] == "balanced"
+    assert "--no-export-masks" not in argv
+    assert "--no-resample" in argv[argv.index("--") + 1 :]
     assert spec.metadata["run_typing"] is True
     assert spec.metadata["num_cpus"] == "8"
     assert spec.metadata["num_gpus"] == "1"
+    assert spec.metadata["export_masks"] is True
+    assert spec.metadata["binned_masks"] is True
+
+
+def test_cryosparc_predict_job_spec_forwards_output_options(tmp_path: Path) -> None:
+    spec = build_job_spec(
+        "cryosparc_predict",
+        {
+            "project": "P1",
+            "workspace": "W2",
+            "micrographs": "J3",
+            "particles": "J4",
+            "export_masks": False,
+            "binned_masks": False,
+        },
+        work_dir=tmp_path,
+    )
+
+    argv = spec.steps[0].argv
+    assert "--" in argv
+    forwarded = argv[argv.index("--") + 1 :]
+    assert "--no-export-masks" in forwarded
+    assert "--no-resample" not in forwarded
+    assert spec.metadata["export_masks"] is False
+    assert spec.metadata["binned_masks"] is False
 
 
 def test_filter_particles_job_spec_builds_existing_mask_command(tmp_path: Path) -> None:

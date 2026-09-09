@@ -45,6 +45,7 @@ DEFAULT_PARTICLE_OVERLAY_CONTACT_SHEET_COLS = 1
 DEFAULT_PARTICLE_OVERLAY_CONTACT_SHEET_TILE = 1100
 DEFAULT_PARTICLE_OVERLAY_CONTACT_SHEET_EVERY = 1
 DEFAULT_PARTICLE_OVERLAY_WARN_REMOVED_FRACTION = 0.25
+DEFAULT_INTERNAL_MAP_OUTPUT_SUBDIR = ".cryofilter_internal_maps"
 TYPING_MANIFEST_FILENAME = "contamination_typing_manifest.csv"
 TYPING_MANIFEST_FIELDS = (
     "dataset_id",
@@ -1076,6 +1077,12 @@ def _finalize_inference_run(
 
     if args.particle_file:
         particle_input = Path(args.particle_file).expanduser().resolve()
+        mask_dir_raw = summary.get("mask_output_dir")
+        mask_dir = (
+            Path(str(mask_dir_raw)).expanduser().resolve()
+            if mask_dir_raw
+            else output_dir
+        )
         particle_output = (
             Path(args.filtered_particle_file).expanduser().resolve()
             if args.filtered_particle_file
@@ -1085,7 +1092,7 @@ def _finalize_inference_run(
             particle_file=particle_input,
             output_file=particle_output,
             micrograph_paths=mrc_paths,
-            mask_dir=output_dir,
+            mask_dir=mask_dir,
             exclusion_distance_angstrom=float(args.particle_exclusion_distance_angstrom),
             pixel_size_override_angstrom=args.pixel_size_angstrom,
             csg_file=args.particle_csg,
@@ -1191,8 +1198,21 @@ def _run_infer(
         if args.image_output_dir
         else output_dir / "diagnostic_images"
     )
+    export_mask_outputs = bool(getattr(args, "export_masks", True))
+    force_disk_map_outputs = bool(getattr(args, "force_disk_mask_outputs", False))
+    needs_disk_map_outputs = bool(
+        export_mask_outputs or args.particle_file or force_disk_map_outputs
+    )
+    map_output_dir = (
+        output_dir
+        if export_mask_outputs
+        else output_dir / DEFAULT_INTERNAL_MAP_OUTPUT_SUBDIR
+    )
+    save_mrc_outputs = bool(args.save_mrc and export_mask_outputs)
 
     output_dir.mkdir(parents=True, exist_ok=True)
+    if needs_disk_map_outputs:
+        map_output_dir.mkdir(parents=True, exist_ok=True)
     if args.render_images:
         image_output_dir.mkdir(parents=True, exist_ok=True)
     mrc_paths = (
@@ -1309,6 +1329,16 @@ def _run_infer(
 
     print(f"Using checkpoint={checkpoint_path}", flush=True)
     print(f"Using output_dir={output_dir}", flush=True)
+    if export_mask_outputs:
+        print(f"Exporting mask/probability arrays to {map_output_dir}", flush=True)
+    elif needs_disk_map_outputs:
+        print(
+            "Visible mask/probability export disabled; keeping internal arrays for "
+            f"downstream filtering/typing in {map_output_dir}",
+            flush=True,
+        )
+    else:
+        print("Visible mask/probability export disabled", flush=True)
     print(f"Using device={args.device}", flush=True)
     print(f"Using model_type={model_type}", flush=True)
     print(f"Using attention_type={attention_type}", flush=True)
@@ -1467,6 +1497,14 @@ def _run_infer(
         },
         "no_resample": bool(args.no_resample),
         "no_resample_or_gen": bool(args.no_resample_or_gen),
+        "export_masks": bool(export_mask_outputs),
+        "mask_outputs_exported": bool(export_mask_outputs),
+        "mask_output_dir": (
+            str(map_output_dir)
+            if needs_disk_map_outputs and not bool(args.no_resample_or_gen)
+            else None
+        ),
+        "binned_outputs": bool(args.no_resample),
         "render_images": bool(args.render_images),
         "image_output_dir": str(image_output_dir) if args.render_images else None,
         "image_max_dim": int(args.image_max_dim),
@@ -1482,8 +1520,8 @@ def _run_infer(
 
     for idx, mrc_path in enumerate(mrc_paths, start=1):
         stem = mrc_path.stem
-        prob_npy = output_dir / f"{stem}_prob.npy"
-        mask_npy = output_dir / f"{stem}_mask.npy"
+        prob_npy = map_output_dir / f"{stem}_prob.npy"
+        mask_npy = map_output_dir / f"{stem}_mask.npy"
         prob_mrc = output_dir / f"{stem}_prob.mrc"
         mask_mrc = output_dir / f"{stem}_mask.mrc"
         diagnostic_png = image_output_dir / f"{stem}_clean_filtering.png"
@@ -1494,14 +1532,21 @@ def _run_infer(
         )
         skip_resample = bool(args.no_resample or args.no_resample_or_gen)
         skip_generation = bool(args.no_resample_or_gen)
-        expected_outputs = [prob_npy, mask_npy]
-        if args.save_mrc:
+        expected_outputs = []
+        if not skip_generation and needs_disk_map_outputs:
+            expected_outputs.extend([prob_npy, mask_npy])
+        if not skip_generation and save_mrc_outputs:
             expected_outputs.extend([prob_mrc, mask_mrc])
         if args.render_images:
             expected_outputs.append(diagnostic_png)
         if particle_overlay_png is not None:
             expected_outputs.append(particle_overlay_png)
-        if bool(args.skip_existing) and (not skip_generation) and all(p.exists() for p in expected_outputs):
+        if (
+            bool(args.skip_existing)
+            and (not skip_generation)
+            and expected_outputs
+            and all(p.exists() for p in expected_outputs)
+        ):
             print(
                 f"[{idx}/{len(mrc_paths)}] {mrc_path.name}: skipping existing outputs",
                 flush=True,
@@ -1509,11 +1554,12 @@ def _run_infer(
             skipped_record = {
                 "input_mrc": str(mrc_path),
                 "status": "skipped_existing",
-                "generated_outputs": True,
-                "output_prob_npy": str(prob_npy),
-                "output_mask_npy": str(mask_npy),
-                "output_prob_mrc": str(prob_mrc) if args.save_mrc else None,
-                "output_mask_mrc": str(mask_mrc) if args.save_mrc else None,
+                "generated_outputs": bool(needs_disk_map_outputs),
+                "exported_outputs": bool(export_mask_outputs and needs_disk_map_outputs),
+                "output_prob_npy": str(prob_npy) if needs_disk_map_outputs else None,
+                "output_mask_npy": str(mask_npy) if needs_disk_map_outputs else None,
+                "output_prob_mrc": str(prob_mrc) if save_mrc_outputs else None,
+                "output_mask_mrc": str(mask_mrc) if save_mrc_outputs else None,
                 "output_diagnostic_png": str(diagnostic_png) if args.render_images else None,
                 "particle_overlay_png": (
                     str(particle_overlay_png)
@@ -1688,12 +1734,13 @@ def _run_infer(
         diagnostic_png_path: Optional[str] = None
 
         if not skip_generation:
-            np.save(prob_npy, prob_map)
-            np.save(mask_npy, mask)
-            prob_npy_path = str(prob_npy)
-            mask_npy_path = str(mask_npy)
+            if needs_disk_map_outputs:
+                np.save(prob_npy, prob_map)
+                np.save(mask_npy, mask)
+                prob_npy_path = str(prob_npy)
+                mask_npy_path = str(mask_npy)
 
-            if args.save_mrc:
+            if save_mrc_outputs:
                 _save_mrc(prob_mrc, prob_map, output_pixel_size)
                 _save_mrc(mask_mrc, mask.astype(np.float32, copy=False), output_pixel_size)
                 prob_mrc_path = str(prob_mrc)
@@ -1728,7 +1775,8 @@ def _run_infer(
             "multi_scale_fusion_applied": bool(len(policy.multiscale_targets) > 1),
             "per_scale": per_scale_results,
             "output_is_downsampled": bool(output_is_downsampled),
-            "generated_outputs": bool(not skip_generation),
+            "generated_outputs": bool((not skip_generation) and needs_disk_map_outputs),
+            "exported_outputs": bool((not skip_generation) and export_mask_outputs and needs_disk_map_outputs),
             "output_prob_npy": prob_npy_path,
             "output_mask_npy": mask_npy_path,
             "output_prob_mrc": prob_mrc_path,
@@ -1852,6 +1900,7 @@ def _run_multi_gpu_infer(args: argparse.Namespace, devices: Sequence[str]) -> in
     ):
         worker_payload = dict(vars(args))
         worker_payload["device"] = device
+        worker_payload["force_disk_mask_outputs"] = bool(args.particle_file)
         process = context.Process(
             target=_multi_gpu_worker,
             args=(worker_payload, shard, worker_summary_path),
@@ -2487,6 +2536,22 @@ def _build_parser() -> argparse.ArgumentParser:
         dest="save_mrc",
         action="store_false",
         help="Disable .mrc output export (keep only .npy outputs).",
+    )
+    infer.add_argument(
+        "--export-masks",
+        dest="export_masks",
+        action="store_true",
+        default=True,
+        help="Export per-micrograph probability and mask arrays. Enabled by default.",
+    )
+    infer.add_argument(
+        "--no-export-masks",
+        dest="export_masks",
+        action="store_false",
+        help=(
+            "Do not export visible probability/mask arrays. Runs with particle "
+            "filtering or typing may still keep hidden internal arrays until completion."
+        ),
     )
     infer.add_argument(
         "--render-images",
