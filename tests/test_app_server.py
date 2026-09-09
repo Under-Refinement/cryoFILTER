@@ -12,6 +12,7 @@ import pytest
 from cryofilter.app.server import (
     ARTIFACT_SUFFIXES,
     AppState,
+    _app_startup_lines,
     _bind_app_server,
     build_job_spec,
     make_handler,
@@ -53,6 +54,21 @@ def test_app_server_uses_next_available_port(tmp_path: Path) -> None:
         if server is not None:
             server.server_close()
         holder.close()
+
+
+def test_app_startup_lines_warn_about_ssh_tunnel_port_changes(tmp_path: Path) -> None:
+    lines = _app_startup_lines(
+        host="127.0.0.1",
+        requested_port=8765,
+        bound_port=8766,
+        state_dir=tmp_path / ".cryofilter_app",
+        remote_name="silva",
+    )
+
+    assert "http://127.0.0.1:8766/" in lines[0]
+    assert any("existing SSH tunnel for 8765" in line for line in lines)
+    assert any("forward 8766" in line for line in lines)
+    assert any("ssh -L 8766:127.0.0.1:8766 user@silva" in line for line in lines)
 
 
 def test_infer_job_spec_builds_cli_command(tmp_path: Path) -> None:

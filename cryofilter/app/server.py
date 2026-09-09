@@ -36,6 +36,7 @@ from cryofilter.app.annotation_manifest import (
 APP_DIRNAME = ".cryofilter_app"
 MAX_LOG_BYTES_DEFAULT = 256_000
 APP_PORT_SEARCH_LIMIT = 50
+LOCALHOST_NAMES = {"127.0.0.1", "localhost", "::1"}
 ARTIFACT_SUFFIXES = {
     ".png",
     ".jpg",
@@ -84,18 +85,13 @@ def run(args: argparse.Namespace) -> int:
     )
     if requested_port != 0 and bound_port != requested_port:
         print(f"Port {requested_port} is in use; using {bound_port} instead.", flush=True)
-    url = f"http://{args.host}:{bound_port}/"
-    print(f"cryoFILTER app listening at {url}", flush=True)
-    if str(args.host) in {"127.0.0.1", "localhost", "::1"}:
-        print(
-            f"Laptop browser URL with SSH forwarding: http://127.0.0.1:{bound_port}/",
-            flush=True,
-        )
-        print(
-            f"SSH example: ssh -L {bound_port}:127.0.0.1:{bound_port} user@their-server",
-            flush=True,
-        )
-    print(f"State directory: {state.data_dir}", flush=True)
+    for line in _app_startup_lines(
+        host=str(args.host),
+        requested_port=requested_port,
+        bound_port=bound_port,
+        state_dir=state.data_dir,
+    ):
+        print(line, flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
@@ -103,6 +99,29 @@ def run(args: argparse.Namespace) -> int:
     finally:
         server.server_close()
     return 0
+
+
+def _app_startup_lines(
+    *,
+    host: str,
+    requested_port: int,
+    bound_port: int,
+    state_dir: Path,
+    remote_name: str | None = None,
+) -> list[str]:
+    lines = [f"cryoFILTER app listening at http://{host}:{bound_port}/"]
+    if host in LOCALHOST_NAMES:
+        lines.append(f"Laptop browser URL with SSH forwarding: http://127.0.0.1:{bound_port}/")
+        if requested_port != 0 and bound_port != requested_port:
+            lines.append(
+                f"Note: an existing SSH tunnel for {requested_port} still opens whatever is "
+                f"running on the server's {requested_port}; forward {bound_port} before "
+                f"opening the {bound_port} URL on your laptop."
+            )
+        ssh_target = remote_name or socket.gethostname() or "their-server"
+        lines.append(f"SSH example: ssh -L {bound_port}:127.0.0.1:{bound_port} user@{ssh_target}")
+    lines.append(f"State directory: {state_dir}")
+    return lines
 
 
 def _bind_app_server(
