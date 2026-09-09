@@ -67,7 +67,8 @@ async function api(path, options = {}) {
 
 function formPayload(form) {
   const payload = {};
-  for (const element of Array.from(form.elements)) {
+  const elements = form.elements || form.querySelectorAll("input, select, textarea");
+  for (const element of Array.from(elements)) {
     if (!element.name || element.disabled) continue;
     if (element.type === "checkbox") {
       payload[element.name] = element.checked;
@@ -77,6 +78,10 @@ function formPayload(form) {
     if (value) payload[element.name] = value;
   }
   return payload;
+}
+
+function namedField(container, name) {
+  return container?.elements?.[name] || container?.querySelector(`[name="${name}"]`);
 }
 
 function setCryosparcStatus(message, tone = "") {
@@ -135,7 +140,8 @@ async function connectCryosparc(form) {
       body: JSON.stringify(payload),
     });
     syncCryosparcRunCredentials(payload);
-    if (form.elements.cryosparc_password) form.elements.cryosparc_password.value = "";
+    const passwordField = namedField(form, "cryosparc_password");
+    if (passwordField) passwordField.value = "";
     setCryosparcGate(true, result);
     setCryosparcStatus("Connected.", "ok");
     $("#cryosparcRunForm input[name='project']")?.focus();
@@ -153,7 +159,8 @@ async function connectCryosparc(form) {
 function resetCryosparcConnection() {
   syncCryosparcRunCredentials({});
   const connectForm = $("#cryosparcConnectForm");
-  if (connectForm?.elements.cryosparc_password) connectForm.elements.cryosparc_password.value = "";
+  const passwordField = namedField(connectForm, "cryosparc_password");
+  if (passwordField) passwordField.value = "";
   setCryosparcGate(false);
   setCryosparcStatus("Ready to connect.");
   $("#cryosparcConnectForm input[name='cryosparc_base_url']")?.focus();
@@ -167,7 +174,13 @@ async function handleCryosparcConnectEvent(event) {
   }
   const form = $("#cryosparcConnectForm");
   if (!form) return false;
-  if (form.reportValidity && !form.reportValidity()) return false;
+  const fields = Array.from(form.querySelectorAll("input, select, textarea"));
+  const invalidField = fields.find((field) => field.checkValidity && !field.checkValidity());
+  if (invalidField) {
+    invalidField.reportValidity?.();
+    invalidField.focus();
+    return false;
+  }
   await connectCryosparc(form);
   return false;
 }
@@ -178,6 +191,11 @@ function bindCryosparcConnectControl() {
   form.dataset.connectBound = "1";
   form.addEventListener("submit", handleCryosparcConnectEvent, true);
   $("#cryosparcConnectButton")?.addEventListener("click", handleCryosparcConnectEvent, true);
+  form.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && ["INPUT", "SELECT"].includes(event.target?.tagName || "")) {
+      handleCryosparcConnectEvent(event);
+    }
+  }, true);
 }
 
 function installCryosparcConnectControl() {

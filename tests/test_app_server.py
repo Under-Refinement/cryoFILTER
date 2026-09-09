@@ -138,14 +138,18 @@ def test_cryosparc_connect_button_uses_explicit_handler() -> None:
     html = (static_root / "index.html").read_text(encoding="utf-8")
     script = (static_root / "app.js").read_text(encoding="utf-8")
 
+    assert '<div id="cryosparcConnectForm"' in html
+    assert '<form id="cryosparcConnectForm"' not in html
     assert 'id="cryosparcConnectButton"' in html
     assert 'class="primary"' in html
-    assert 'type="submit"' in html
+    assert 'type="button"' in html
     assert "onsubmit=" not in html
     assert "onclick=" not in html
     assert "function bindCryosparcConnectControl()" in script
+    assert 'form.querySelectorAll("input, select, textarea")' in script
     assert 'form.addEventListener("submit", handleCryosparcConnectEvent, true)' in script
     assert '$("#cryosparcConnectButton")?.addEventListener("click", handleCryosparcConnectEvent, true)' in script
+    assert 'form.addEventListener("keydown"' in script
 
 
 def test_infer_job_spec_builds_cli_command(tmp_path: Path) -> None:
