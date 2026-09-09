@@ -17,6 +17,13 @@ WARN_BORDER_RGB = (225, 70, 60)
 BACKGROUND_RGB = (245, 245, 245)
 PANEL_GAP_RGB = (25, 25, 25)
 PROBABILITY_COLORMAP = "viridis"
+TYPE_MASK_COLORS_RGB = {
+    1: (217, 95, 2),
+    2: (27, 158, 119),
+    3: (204, 121, 167),
+    4: (230, 171, 2),
+    255: LIGHT_PURPLE_RGB,
+}
 
 
 def _resize_to_shape(arr: np.ndarray, target_shape: tuple[int, int], order: int) -> np.ndarray:
@@ -356,6 +363,48 @@ def render_raw_frame(img8: np.ndarray, *, label: str | None = None) -> np.ndarra
     return np.asarray(canvas.convert("RGB"), dtype=np.uint8)
 
 
+def render_typed_mask_frame(
+    img8: np.ndarray,
+    typed_mask: np.ndarray,
+    *,
+    label: str | None = None,
+    alpha: float = 0.46,
+    outline_alpha: float = 0.86,
+) -> np.ndarray:
+    """Render one RGB frame with contamination colored by predicted subtype."""
+
+    from PIL import Image, ImageDraw
+
+    rgb = _to_rgb(img8)
+    typed = np.asarray(typed_mask)
+    if tuple(typed.shape[:2]) != tuple(rgb.shape[:2]):
+        typed = _resize_to_shape(typed, tuple(rgb.shape[:2]), order=0)
+    typed = np.asarray(typed, dtype=np.uint8)
+    base = Image.fromarray(rgb, mode="RGB").convert("RGBA")
+    contamination = typed > 0
+    if np.any(contamination):
+        overlay_rgba = np.zeros((rgb.shape[0], rgb.shape[1], 4), dtype=np.uint8)
+        for type_id, color in TYPE_MASK_COLORS_RGB.items():
+            region = typed == np.uint8(type_id)
+            if np.any(region):
+                overlay_rgba[region, :3] = np.asarray(color, dtype=np.uint8)
+                overlay_rgba[region, 3] = int(round(255 * float(np.clip(alpha, 0.0, 1.0))))
+        unlabeled = contamination & (overlay_rgba[..., 3] == 0)
+        if np.any(unlabeled):
+            overlay_rgba[unlabeled, :3] = np.asarray(LIGHT_PURPLE_RGB, dtype=np.uint8)
+            overlay_rgba[unlabeled, 3] = int(round(255 * float(np.clip(alpha, 0.0, 1.0))))
+        base = Image.alpha_composite(base, Image.fromarray(overlay_rgba, mode="RGBA"))
+        outline_bool = _mask_outline(contamination, 2)
+        if np.any(outline_bool):
+            outline_rgba = np.zeros((rgb.shape[0], rgb.shape[1], 4), dtype=np.uint8)
+            outline_rgba[outline_bool, :3] = np.asarray(MASK_OUTLINE_RGB, dtype=np.uint8)
+            outline_rgba[outline_bool, 3] = int(round(255 * float(np.clip(outline_alpha, 0.0, 1.0))))
+            base = Image.alpha_composite(base, Image.fromarray(outline_rgba, mode="RGBA"))
+    if label:
+        _draw_label(ImageDraw.Draw(base, mode="RGBA"), str(label), base.size)
+    return np.asarray(base.convert("RGB"), dtype=np.uint8)
+
+
 def side_by_side(
     left: np.ndarray,
     right: np.ndarray,
@@ -400,11 +449,14 @@ def render_particle_overlay_png(
     keep: np.ndarray,
     output_path: str | Path,
     probability_map: np.ndarray | None = None,
+    typed_mask: np.ndarray | None = None,
     label: str | None = None,
+    typed_mask_label: str | None = "typed contamination",
     max_display_dim: int = 1400,
     particle_diameter_px: float = 34.0,
     mask_alpha: float = 0.35,
     include_raw_panel: bool = False,
+    include_typed_mask_panel: bool = False,
     include_probability_panel: bool = False,
     panel_gap_px: int = 16,
 ) -> Path:
@@ -435,6 +487,10 @@ def render_particle_overlay_png(
         panels = [render_raw_frame(img8), frame]
     else:
         panels = [frame]
+    if include_typed_mask_panel:
+        if typed_mask is None:
+            raise ValueError("include_typed_mask_panel=True requires typed_mask")
+        panels.append(render_typed_mask_frame(img8, typed_mask, label=typed_mask_label))
     if include_probability_panel:
         if probability_map is None:
             raise ValueError("include_probability_panel=True requires probability_map")

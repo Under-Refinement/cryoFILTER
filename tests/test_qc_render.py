@@ -17,6 +17,9 @@ def test_particle_overlay_renderer_writes_png_and_contact_sheet(tmp_path: Path) 
     ).astype(np.float32)
     mask = np.zeros((96, 128), dtype=np.uint8)
     mask[24:76, 50:106] = 1
+    typed_mask = np.zeros((96, 128), dtype=np.uint8)
+    typed_mask[24:50, 50:106] = 1
+    typed_mask[50:76, 50:106] = 3
     probability = np.clip((xx + yy) / float(xx.max() + yy.max()), 0.0, 1.0).astype(np.float32)
     coords = np.asarray([[64.0, 48.0], [18.0, 18.0]], dtype=np.float32)
     keep = np.asarray([False, True], dtype=bool)
@@ -54,6 +57,26 @@ def test_particle_overlay_renderer_writes_png_and_contact_sheet(tmp_path: Path) 
     paired = Image.open(paired_path)
     assert paired.size[0] == arr.shape[1] * 3 + 16
     assert paired.size[1] == arr.shape[0]
+
+    typed_path = render_particle_overlay_png(
+        image=image,
+        mask=mask,
+        coords_xy=coords,
+        keep=keep,
+        output_path=tmp_path / "frame_four_panel.png",
+        probability_map=probability,
+        typed_mask=typed_mask,
+        label="mic_001 kept 1 / rejected 1",
+        max_display_dim=96,
+        particle_diameter_px=12,
+        include_raw_panel=True,
+        include_typed_mask_panel=True,
+        include_probability_panel=True,
+        panel_gap_px=8,
+    )
+    typed = Image.open(typed_path)
+    assert typed.size[0] == arr.shape[1] * 4 + 24
+    assert typed.size[1] == arr.shape[0]
 
     sheet_path = montage_from_paths(
         [paired_path],

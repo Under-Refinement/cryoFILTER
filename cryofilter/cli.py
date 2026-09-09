@@ -1142,14 +1142,17 @@ def _finalize_inference_run(
     summary["typing_manifest"] = None if typing_manifest_path is None else str(typing_manifest_path)
 
     summary_path = output_dir / "inference_summary.json"
-    with open(summary_path, "w", encoding="utf-8") as handle:
-        json.dump(summary, handle, indent=2)
+    _write_inference_summary(summary_path, summary)
 
     print(f"Finished inference on {len(mrc_paths)} micrograph(s).", flush=True)
     if typing_manifest_path is not None:
         print(f"Typing manifest: {typing_manifest_path}", flush=True)
     print(f"Summary: {summary_path}", flush=True)
     return 0
+
+
+def _write_inference_summary(path: Path, summary: dict[str, object]) -> None:
+    path.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
 
 
 def _run_infer(
@@ -1572,6 +1575,8 @@ def _run_infer(
                 particle_overlay_context["frame_paths"].append(particle_overlay_png)
                 particle_overlay_context["frame_borders"].append(None)
             summary["inputs"].append(skipped_record)
+            if finalize:
+                _write_inference_summary(output_dir / "inference_summary.json", summary)
             continue
 
         image, header_pixel_size = _load_mrc_2d(mrc_path)
@@ -1802,6 +1807,8 @@ def _run_infer(
                 pixel_size_angstrom=pixel_size,
             )
         summary["inputs"].append(input_record)
+        if finalize:
+            _write_inference_summary(output_dir / "inference_summary.json", summary)
 
     if particle_overlay_context is not None:
         _finalize_particle_overlay_contact_sheet(particle_overlay_context, args)

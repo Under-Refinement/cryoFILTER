@@ -77,6 +77,29 @@
               </div>
               <div id="artifactGrid" class="artifact-grid" hidden></div>
               <div id="metricsGrid" class="metrics-grid" hidden></div>
+              <div id="liveSummary" class="live-summary" hidden>
+                <div class="live-summary-head">
+                  <div>
+                    <h3>Contamination</h3>
+                    <p id="liveSummaryMeta">Waiting for summary data.</p>
+                  </div>
+                  <div class="live-range-controls">
+                    <label>
+                      <span>Range</span>
+                      <select id="liveSummaryMode">
+                        <option value="all">Whole data set</option>
+                        <option value="last">Last N images</option>
+                        <option value="first">First N images</option>
+                      </select>
+                    </label>
+                    <label id="liveSummaryCountWrap">
+                      <span>N</span>
+                      <input id="liveSummaryCount" type="number" min="1" max="10000" value="100" />
+                    </label>
+                  </div>
+                </div>
+                <div id="liveSummaryCharts" class="live-charts"></div>
+              </div>
               <pre id="jobLog" class="log" hidden></pre>
             </div>
           </div>
@@ -99,7 +122,7 @@
             <label><span class="label-row">Threshold <span class="help" tabindex="0" data-tip="Final mask threshold from 0 to 1. Higher values are more conservative; 0.6 is the validated default.">?</span></span><input name="threshold" type="number" step="0.01" value="0.6" /></label>
             <label><span class="label-row">Profile <span class="help" tabindex="0" data-tip="Inference speed/quality preset. Balanced is the default; Fast is useful for quick checks; Quality enables the heavier high-quality recipe.">?</span></span><select name="inference_profile"><option>balanced</option><option>fast</option><option>quality</option></select></label>
             <label class="check"><input name="export_masks" type="checkbox" checked /><span class="label-row">Export masks <span class="help" tabindex="0" data-tip="Write per-micrograph probability and mask arrays to the output directory. Turn off to keep summaries and diagnostic images while reducing visible output files.">?</span></span></label>
-            <label class="check"><input name="binned_masks" type="checkbox" checked /><span class="label-row">Binned masks <span class="help" tabindex="0" data-tip="Keep exported mask/probability arrays at cryoFILTER's adaptive working resolution when downsampling is used. This is the memory-saving default.">?</span></span></label>
+            <label class="check"><input name="binned_masks" type="checkbox" /><span class="label-row">Binned masks <span class="help" tabindex="0" data-tip="Keep exported mask/probability arrays at cryoFILTER's adaptive working resolution when downsampling is used. Leave off to write masks back at full micrograph resolution.">?</span></span></label>
             <label><span class="label-row">Pixel size <span class="help" tabindex="0" data-tip="Optional pixel size override in Angstroms per pixel. Use this when the MRC header is missing or incorrect.">?</span></span><input name="pixel_size_angstrom" type="number" step="0.001" placeholder="A/px" /></label>
             <label><span class="label-row">Extra args <span class="help" tabindex="0" data-tip="Advanced cryofilter infer flags, formatted exactly as command-line tokens, for example --batch-forward-size 32.">?</span></span><input name="extra_args" placeholder="--batch-forward-size 32" /></label>
             <label class="check"><input name="recursive" type="checkbox" checked /><span class="label-row">Recursive <span class="help" tabindex="0" data-tip="Search for .mrc files below nested subdirectories instead of only the top-level input directory.">?</span></span></label>
@@ -150,14 +173,15 @@
                 <label><span class="label-row">Workspace <span class="help" tabindex="0" data-tip="CryoSPARC workspace UID, formatted like W5. The External Job card will be created here.">?</span></span><input name="workspace" required placeholder="W2" /></label>
                 <label><span class="label-row">Micrographs <span class="help" tabindex="0" data-tip="CryoSPARC micrograph output reference. J54 is accepted and becomes J54:micrographs; use J54:output_name for nonstandard output names.">?</span></span><input name="micrographs" required placeholder="J54 or J54:micrographs" /></label>
                 <label><span class="label-row">Particles <span class="help" tabindex="0" data-tip="CryoSPARC particle output reference. J56 is accepted and becomes J56:particles; accepted and rejected outputs are written back from this source.">?</span></span><input name="particles" required placeholder="J56 or J56:particles" /></label>
-                <label><span class="label-row">Weights <span class="help" tabindex="0" data-tip="Path to the cryoFILTER checkpoint visible to the machine running this wrapper.">?</span></span><input name="checkpoint" placeholder="/path/to/cryoFILTER_FULL.pt" /></label>
+                <label><span class="label-row">Weights <span class="help" tabindex="0" data-tip="Optional checkpoint path visible to the machine running this wrapper. Leave blank to use pretrained_models/cryoFILTER_FULL.pt from this checkout.">?</span></span><input name="checkpoint" placeholder="pretrained_models/cryoFILTER_FULL.pt" /></label>
                 <label><span class="label-row">Device <span class="help" tabindex="0" data-tip="Device passed through to local cryoFILTER inference after CryoSPARC staging. Use cuda on a GPU node.">?</span></span><select name="device"><option>cuda</option><option>cpu</option></select></label>
+                <label><span class="label-row">GPUs <span class="help" tabindex="0" data-tip="Optional number of CUDA devices to expose to local inference. Values above 1 enable image-level sharding when PyTorch can see multiple GPUs.">?</span></span><input name="num_gpus" type="number" min="0" placeholder="auto" /></label>
+                <label class="check"><input name="run_typing" type="checkbox" checked /><span class="label-row">Run typing <span class="help" tabindex="0" data-tip="Run contamination type classification after inference and add subtype diagnostics to the monitor and CryoSPARC card.">?</span></span></label>
                 <label class="check"><input name="export_masks" type="checkbox" checked /><span class="label-row">Export masks <span class="help" tabindex="0" data-tip="Write per-micrograph probability and mask arrays in the local run directory. CryoSPARC particle outputs, typing, and diagnostic cards still work when this is off.">?</span></span></label>
-                <label class="check"><input name="binned_masks" type="checkbox" checked /><span class="label-row">Binned masks <span class="help" tabindex="0" data-tip="Keep exported mask/probability arrays at the adaptive working resolution when possible to conserve local storage and memory.">?</span></span></label>
+                <label class="check"><input name="binned_masks" type="checkbox" /><span class="label-row">Binned masks <span class="help" tabindex="0" data-tip="Keep exported mask/probability arrays at the adaptive working resolution when possible. Leave off to write masks back at full micrograph resolution.">?</span></span></label>
                 <details class="advanced">
                   <summary>Advanced</summary>
                   <div class="advanced-grid">
-                    <label><span class="label-row">Config <span class="help" tabindex="0" data-tip="Optional cryosparc.toml path for site-specific defaults.">?</span></span><input name="config" placeholder="/path/to/cryosparc.toml" /></label>
                     <label><span class="label-row">Run name <span class="help" tabindex="0" data-tip="Title prefix for the CryoSPARC External Job card.">?</span></span><input name="title" value="cryoFILTER prediction" /></label>
                     <label><span class="label-row">Output root <span class="help" tabindex="0" data-tip="Local directory for staged inputs, inference outputs, typing summaries, diagnostics, and manifests.">?</span></span><input name="local_run_root" placeholder="./cryofilter_runs/cryosparc" /></label>
                     <label><span class="label-row">Limit <span class="help" tabindex="0" data-tip="Optional maximum number of micrographs to stage. Useful for smoke tests before running a full workspace output.">?</span></span><input name="limit_micrographs" type="number" min="1" placeholder="optional" /></label>
@@ -166,8 +190,13 @@
                     <label><span class="label-row">Profile <span class="help" tabindex="0" data-tip="Inference preset passed to cryoFILTER. Balanced is the validated default; Fast is available for quick checks; Quality is slower.">?</span></span><select name="inference_profile"><option>balanced</option><option>fast</option><option>quality</option></select></label>
                     <label><span class="label-row">Batch <span class="help" tabindex="0" data-tip="Optional batch-forward size for GPU inference. Leave blank for cryoFILTER auto-selection.">?</span></span><input name="batch_forward_size" type="number" placeholder="auto" /></label>
                     <label><span class="label-row">CPUs <span class="help" tabindex="0" data-tip="Optional CPU thread count for preprocessing, PNG generation, and typing subprocesses. Leave blank to use the server environment.">?</span></span><input name="num_cpus" type="number" min="1" placeholder="auto" /></label>
-                    <label><span class="label-row">GPUs <span class="help" tabindex="0" data-tip="Optional number of CUDA devices to expose to local inference. Values above 1 enable DataParallel for batched inference when PyTorch can see multiple GPUs.">?</span></span><input name="num_gpus" type="number" min="0" placeholder="auto" /></label>
                     <label><span class="label-row">Typing summary <span class="help" tabindex="0" data-tip="Optional existing contamination typing summary.json. If supplied, the run uses it for diagnostics instead of launching typing.">?</span></span><input name="typing_summary" placeholder="/path/to/typing/summary.json" /></label>
+                  </div>
+                </details>
+                <details class="advanced bridge-options">
+                  <summary>Bridge</summary>
+                  <div class="advanced-grid">
+                    <label><span class="label-row">Config <span class="help" tabindex="0" data-tip="Optional cryosparc.toml path for site-specific bridge and CryoSPARC defaults.">?</span></span><input name="config" placeholder="/path/to/cryosparc.toml" /></label>
                     <label><span class="label-row">Bridge mode <span class="help" tabindex="0" data-tip="Where the CryoSPARC adapter runs. Local is correct when this app is running on the processing server; advanced users may enter user@worker.example.edu.">?</span></span><input name="bridge_host" value="local" placeholder="local or user@worker.example.edu" /></label>
                     <label><span class="label-row">Bridge command <span class="help" tabindex="0" data-tip="Optional override for the cryofilter-bridge executable. Leave blank to run the bundled Python bridge module locally.">?</span></span><input name="bridge_command" placeholder="/path/to/cryofilter-bridge" /></label>
                     <label><span class="label-row">Bridge work root <span class="help" tabindex="0" data-tip="Writable staging directory visible to the bridge host. Leave blank to use the configured/default bridge work directory.">?</span></span><input name="remote_work_root" placeholder="/path/to/cryofilter_bridge_work" /></label>
@@ -175,7 +204,6 @@
                     <label><span class="label-row">Master host <span class="help" tabindex="0" data-tip="Advanced override for CryoSPARC master/API host. Prefer Instance URL unless your site needs split host/port values.">?</span></span><input name="cryosparc_host" placeholder="cryosparc-master.example.edu" /></label>
                     <label><span class="label-row">Base port <span class="help" tabindex="0" data-tip="Advanced override for CryoSPARC base port, commonly 39000. Prefer Instance URL for normal use.">?</span></span><input name="cryosparc_base_port" type="number" placeholder="39000" /></label>
                     <label><span class="label-row">SSH options <span class="help" tabindex="0" data-tip="Only used when Bridge mode is a remote host. Enter options as command-line tokens, for example -J user@login.example.edu.">?</span></span><input name="ssh_options" placeholder="-J user@login.example.edu" /></label>
-                    <label class="check"><input name="run_typing" type="checkbox" checked /><span class="label-row">Run typing <span class="help" tabindex="0" data-tip="Run contamination type classification after inference and include type pie/bar charts on the CryoSPARC card.">?</span></span></label>
                   </div>
                 </details>
               </form>

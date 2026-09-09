@@ -42,6 +42,7 @@ def test_infer_job_spec_builds_cli_command(tmp_path: Path) -> None:
             "num_gpus": "1",
             "threshold": "0.6",
             "particle_file": "/data/particles.cs",
+            "binned_masks": True,
             "recursive": True,
             "render_overlays": True,
             "extra_args": "--batch-forward-size 32",
@@ -70,6 +71,7 @@ def test_infer_job_spec_can_disable_visible_mask_exports(tmp_path: Path) -> None
         "infer",
         {
             "input": "/data/micrographs",
+            "checkpoint": "custom_weights.pt",
             "output_dir": str(tmp_path / "out"),
             "export_masks": False,
             "binned_masks": False,
@@ -83,6 +85,33 @@ def test_infer_job_spec_can_disable_visible_mask_exports(tmp_path: Path) -> None
     assert "--no-resample" not in argv
     assert "--no-render-particle-overlays" in argv
     assert spec.metadata["export_masks"] is False
+    assert spec.metadata["binned_masks"] is False
+
+
+def test_infer_job_spec_reports_missing_default_weights(tmp_path: Path) -> None:
+    with pytest.raises(FileNotFoundError, match="pretrained_models/cryoFILTER_FULL.pt"):
+        build_job_spec(
+            "infer",
+            {
+                "input": "/data/micrographs",
+                "output_dir": str(tmp_path / "out"),
+            },
+            work_dir=tmp_path,
+        )
+
+
+def test_infer_job_spec_leaves_binned_masks_off_by_default(tmp_path: Path) -> None:
+    spec = build_job_spec(
+        "infer",
+        {
+            "input": "/data/micrographs",
+            "checkpoint": "custom_weights.pt",
+            "output_dir": str(tmp_path / "out"),
+        },
+        work_dir=tmp_path,
+    )
+
+    assert "--no-resample" not in spec.steps[0].argv
     assert spec.metadata["binned_masks"] is False
 
 
@@ -117,18 +146,23 @@ def test_cryosparc_predict_job_spec_uses_typing_default(tmp_path: Path) -> None:
     assert argv[argv.index("--cryosparc-base-port") + 1] == "39000"
     assert argv[argv.index("--micrographs") + 1] == "J76:micrographs"
     assert argv[argv.index("--particles") + 1] == "J76:particles"
+    assert "--run-id" in argv
+    run_id = argv[argv.index("--run-id") + 1]
     assert argv[argv.index("--num-cpus") + 1] == "8"
     assert argv[argv.index("--num-gpus") + 1] == "1"
     assert "--" in argv
     assert argv[argv.index("--device") + 1] == "cuda"
     assert argv[argv.index("--inference-profile") + 1] == "balanced"
     assert "--no-export-masks" not in argv
-    assert "--no-resample" in argv[argv.index("--") + 1 :]
+    assert "--no-resample" not in argv[argv.index("--") + 1 :]
     assert spec.metadata["run_typing"] is True
     assert spec.metadata["num_cpus"] == "8"
     assert spec.metadata["num_gpus"] == "1"
     assert spec.metadata["export_masks"] is True
-    assert spec.metadata["binned_masks"] is True
+    assert spec.metadata["binned_masks"] is False
+    assert spec.metadata["run_id"] == run_id
+    assert spec.metadata["local_run_dir"] == tmp_path / "runs" / run_id
+    assert spec.artifact_roots == [tmp_path / "runs" / run_id]
 
 
 def test_cryosparc_predict_job_spec_forwards_output_options(tmp_path: Path) -> None:
@@ -139,6 +173,7 @@ def test_cryosparc_predict_job_spec_forwards_output_options(tmp_path: Path) -> N
             "workspace": "W2",
             "micrographs": "J3",
             "particles": "J4",
+            "checkpoint": "custom_weights.pt",
             "export_masks": False,
             "binned_masks": False,
         },
@@ -195,6 +230,7 @@ def test_cryosparc_predict_job_spec_accepts_common_output_ref_shorthand(tmp_path
             "workspace": "W5",
             "micrographs": "J54",
             "particles": "J56",
+            "checkpoint": "custom_weights.pt",
             "cryosparc_base_url": "cryosparc.example.edu:39000",
         },
         work_dir=tmp_path,
@@ -218,6 +254,7 @@ def test_cryosparc_password_is_ephemeral_job_env(tmp_path: Path) -> None:
             "workspace": "W2",
             "micrographs": "J3",
             "particles": "J4",
+            "checkpoint": "custom_weights.pt",
             "cryosparc_password": "unit-test-secret",
         },
         work_dir=tmp_path,
@@ -288,6 +325,7 @@ def test_cryosparc_predict_job_spec_can_opt_out_of_typing(tmp_path: Path) -> Non
             "workspace": "W2",
             "micrographs": "J3:micrographs",
             "particles": "J4:particles",
+            "checkpoint": "custom_weights.pt",
             "run_typing": False,
         },
         work_dir=tmp_path,
@@ -305,6 +343,7 @@ def test_cryosparc_predict_job_spec_passes_bridge_controls(tmp_path: Path) -> No
             "workspace": "W2",
             "micrographs": "J3:micrographs",
             "particles": "J4:particles",
+            "checkpoint": "custom_weights.pt",
             "bridge_host": "local",
             "bridge_command": "/opt/cryofilter/bin/cryofilter-bridge",
             "remote_work_root": "/scratch/cryofilter_bridge_work",
@@ -634,6 +673,58 @@ def test_app_state_marks_interrupted_jobs_stale(tmp_path: Path) -> None:
     meta = second.get_job(job_id)
     assert meta["status"] == "unknown"
     assert meta["stale_reason"] == "server_restarted"
+
+
+def test_app_state_live_summary_aggregates_typing_range(tmp_path: Path) -> None:
+    state = AppState(tmp_path)
+    job_id = "summary123"
+    run_dir = tmp_path / "runs" / "one"
+    typing_dir = run_dir / "typing"
+    typing_dir.mkdir(parents=True)
+    image_csv = typing_dir / "image_contamination_summary.csv"
+    image_csv.write_text(
+        "\n".join(
+            [
+                "image_id,dataset_id,stem,total_pixels,contaminated_pixels,carbon_area_px,crystalline_area_px,aggregate_area_px,ethane_area_px",
+                "d__a,d,a,100,20,10,10,0,0",
+                "d__b,d,b,100,30,20,0,10,0",
+                "d__c,d,c,200,50,0,0,0,50",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (typing_dir / "summary.json").write_text(
+        json.dumps(
+            {
+                "type_order": ["Carbon", "Crystalline", "Aggregate", "Ethane"],
+                "image_contamination_summary_csv": str(image_csv),
+            }
+        ),
+        encoding="utf-8",
+    )
+    job_dir = state.jobs_dir / job_id
+    job_dir.mkdir(parents=True)
+    (job_dir / "meta.json").write_text(
+        json.dumps({"id": job_id, "kind": "cryosparc_predict", "artifact_roots": [str(run_dir)]}),
+        encoding="utf-8",
+    )
+
+    summary = state.live_summary(job_id, mode="last", count=2)
+
+    assert summary["available"] is True
+    assert summary["source"] == "typing"
+    assert summary["n_images"] == 2
+    assert summary["n_images_total"] == 3
+    assert summary["total_pixels"] == 300
+    assert summary["contaminated_pixels"] == 80
+    assert summary["clean_pixels"] == 220
+    assert {item["label"]: item["area_px"] for item in summary["types"]} == {
+        "Carbon": 20,
+        "Crystalline": 0,
+        "Aggregate": 10,
+        "Ethane": 50,
+    }
 
 
 def test_runtime_status_reports_display_metadata(monkeypatch) -> None:

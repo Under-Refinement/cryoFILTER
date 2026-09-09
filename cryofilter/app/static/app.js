@@ -11,6 +11,10 @@ const state = {
   logOffset: null,
   autoScroll: true,
   cryosparcConnected: false,
+  liveSummary: {
+    mode: "all",
+    count: 100,
+  },
   annotation: {
     sessions: [],
     session: null,
@@ -1811,6 +1815,7 @@ async function renderSelected() {
   const logEl = $("#jobLog");
   const artifacts = $("#artifactGrid");
   const metrics = $("#metricsGrid");
+  const liveSummary = $("#liveSummary");
   if (!state.selected) {
     details.classList.add("empty");
     $("#selectedTitle").textContent = "No run selected";
@@ -1818,10 +1823,12 @@ async function renderSelected() {
     cancelButton.hidden = true;
     artifacts.hidden = true;
     metrics.hidden = true;
+    liveSummary.hidden = true;
     logEl.hidden = true;
     logEl.textContent = "";
     artifacts.innerHTML = "";
     metrics.innerHTML = "";
+    $("#liveSummaryCharts").innerHTML = "";
     return;
   }
   const job = await api(`/api/jobs/${state.selected}`);
@@ -1839,6 +1846,7 @@ async function renderSelected() {
   }
   const artifactCount = await renderArtifacts();
   renderMetrics(job, log.text || "", artifactCount);
+  await renderLiveSummary(job);
 }
 
 async function renderArtifacts() {
@@ -1881,6 +1889,151 @@ function renderMetrics(job, logText, artifactCount) {
       <strong>${escapeHtml(row.value)}</strong>
     </div>
   `).join("");
+}
+
+function syncLiveSummaryControls() {
+  const mode = $("#liveSummaryMode");
+  const count = $("#liveSummaryCount");
+  const countWrap = $("#liveSummaryCountWrap");
+  if (mode) mode.value = state.liveSummary.mode || "all";
+  if (count) count.value = String(state.liveSummary.count || 100);
+  if (countWrap) countWrap.hidden = (state.liveSummary.mode || "all") === "all";
+}
+
+function liveSummaryJobKind(job) {
+  return ["infer", "cryosparc_predict", "type"].includes(job?.kind || "");
+}
+
+async function renderLiveSummary(job) {
+  const panel = $("#liveSummary");
+  const charts = $("#liveSummaryCharts");
+  const meta = $("#liveSummaryMeta");
+  if (!panel || !charts || !meta) return;
+  if (!state.selected || !liveSummaryJobKind(job)) {
+    panel.hidden = true;
+    charts.innerHTML = "";
+    return;
+  }
+  syncLiveSummaryControls();
+  panel.hidden = false;
+  try {
+    const params = new URLSearchParams({
+      mode: state.liveSummary.mode || "all",
+      count: String(state.liveSummary.count || 100),
+    });
+    const summary = await api(`/api/jobs/${state.selected}/live-summary?${params.toString()}`);
+    if (!summary.available) {
+      meta.textContent = summary.message || "Waiting for summary data.";
+      charts.innerHTML = [
+        renderPieBlock("Clean vs contamination", [], "0%", "Waiting for image rows"),
+        renderPieBlock("Type breakdown", [], "0%", "Waiting for typing"),
+      ].join("");
+      return;
+    }
+    meta.textContent = liveSummaryMeta(summary);
+    const contaminationPct = percent(summary.contamination_fraction || 0);
+    const totalSegments = [
+      { label: "clean", value: Number(summary.clean_pixels || 0), color: "#3FBF9B" },
+      { label: "contamination", value: Number(summary.contaminated_pixels || 0), color: "#E0559B" },
+    ];
+    const typeSegments = (summary.types || [])
+      .filter((item) => Number(item.area_px || 0) > 0)
+      .map((item) => ({
+        label: item.label || "type",
+        value: Number(item.area_px || 0),
+        color: safeColor(item.color),
+      }));
+    const typeTotal = typeSegments.reduce((sum, item) => sum + item.value, 0);
+    const largestType = typeSegments.reduce((best, item) => item.value > (best?.value || 0) ? item : best, null);
+    const typeCenter = largestType ? percent(largestType.value / Math.max(typeTotal, 1)) : "0%";
+    const typeSubline = largestType
+      ? `${largestType.label} leads | ${formatCount(typeTotal)} px typed`
+      : "Typing breakdown not available yet";
+    charts.innerHTML = [
+      renderPieBlock(
+        "Clean vs contamination",
+        totalSegments,
+        contaminationPct,
+        `${formatCount(summary.contaminated_pixels || 0)} px contaminated`,
+      ),
+      renderPieBlock("Type breakdown", typeSegments, typeCenter, typeSubline),
+    ].join("");
+  } catch (error) {
+    meta.textContent = error.message;
+    charts.innerHTML = "";
+  }
+}
+
+function liveSummaryMeta(summary) {
+  const mode = summary.mode || "all";
+  const range = mode === "all"
+    ? "whole data set"
+    : `${mode === "last" ? "last" : "first"} ${Number(summary.n_images || 0).toLocaleString()} images`;
+  const source = summary.source === "typing" ? "typing" : "inference";
+  return `${Number(summary.n_images || 0).toLocaleString()}/${Number(summary.n_images_total || 0).toLocaleString()} images | ${range} | ${source}`;
+}
+
+function renderPieBlock(title, segments, center, subline) {
+  const total = segments.reduce((sum, segment) => sum + Math.max(0, Number(segment.value || 0)), 0);
+  const legend = segments.length
+    ? segments.map((segment) => renderLegendRow(segment, total)).join("")
+    : `<div class="live-legend-row"><span class="live-swatch"></span><span>waiting</span><strong>0%</strong></div>`;
+  return `
+    <div class="live-chart">
+      <div class="live-pie" style="--pie-slices: ${escapeHtml(pieSlices(segments))}"><span>${escapeHtml(center)}</span></div>
+      <div class="live-chart-copy">
+        <strong>${escapeHtml(title)}</strong>
+        <span>${escapeHtml(subline)}</span>
+        <div class="live-legend">${legend}</div>
+      </div>
+    </div>
+  `;
+}
+
+function renderLegendRow(segment, total) {
+  const fraction = total > 0 ? Number(segment.value || 0) / total : 0;
+  return `
+    <div class="live-legend-row">
+      <span class="live-swatch" style="--swatch: ${escapeHtml(safeColor(segment.color))}"></span>
+      <span>${escapeHtml(segment.label)}</span>
+      <strong>${escapeHtml(percent(fraction))}</strong>
+    </div>
+  `;
+}
+
+function pieSlices(segments) {
+  const usable = segments
+    .map((segment) => ({
+      value: Math.max(0, Number(segment.value || 0)),
+      color: safeColor(segment.color),
+    }))
+    .filter((segment) => segment.value > 0);
+  const total = usable.reduce((sum, segment) => sum + segment.value, 0);
+  if (total <= 0) return "var(--line-2) 0deg 360deg";
+  let cursor = 0;
+  return usable.map((segment, index) => {
+    const start = cursor;
+    const end = index === usable.length - 1 ? 360 : cursor + (segment.value / total) * 360;
+    cursor = end;
+    return `${segment.color} ${start.toFixed(2)}deg ${end.toFixed(2)}deg`;
+  }).join(", ");
+}
+
+function safeColor(color) {
+  const text = String(color || "");
+  return /^#[0-9a-fA-F]{6}$/.test(text) ? text : "#8DA0AE";
+}
+
+function percent(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return "0%";
+  return `${(Math.max(0, Math.min(1, numeric)) * 100).toFixed(1)}%`;
+}
+
+function formatCount(value) {
+  const numeric = Number(value || 0);
+  if (!Number.isFinite(numeric)) return "0";
+  return Math.round(numeric).toLocaleString();
 }
 
 function parseRejectedMetric(text) {
@@ -2002,6 +2155,19 @@ function bindControls() {
   });
   $$("[data-action='change-cryosparc']").forEach((button) => {
     button.addEventListener("click", resetCryosparcConnection);
+  });
+  $("#liveSummaryMode")?.addEventListener("change", (event) => {
+    state.liveSummary.mode = event.currentTarget.value || "all";
+    syncLiveSummaryControls();
+    const job = state.jobs.find((item) => item.id === state.selected);
+    if (job) renderLiveSummary(job);
+  });
+  $("#liveSummaryCount")?.addEventListener("change", (event) => {
+    const count = Number(event.currentTarget.value || 100);
+    state.liveSummary.count = Number.isFinite(count) ? Math.max(1, Math.min(Math.round(count), 10000)) : 100;
+    syncLiveSummaryControls();
+    const job = state.jobs.find((item) => item.id === state.selected);
+    if (job) renderLiveSummary(job);
   });
   $("#annotationSourceMode")?.addEventListener("change", updateAnnotationSourceFields);
   $("#trainMicrographSourceMode")?.addEventListener("change", updateTrainingMicrographSourceFields);

@@ -46,6 +46,14 @@ ARTIFACT_SUFFIXES = {
     ".txt",
     ".log",
 }
+DEFAULT_PUBLIC_CHECKPOINT_RELATIVE = Path("pretrained_models") / "cryoFILTER_FULL.pt"
+CONTAMINATION_TYPE_LABELS = ("Carbon", "Crystalline", "Aggregate", "Ethane")
+CONTAMINATION_TYPE_COLORS = {
+    "Carbon": "#D95F02",
+    "Crystalline": "#1B9E77",
+    "Aggregate": "#CC79A7",
+    "Ethane": "#E6AB02",
+}
 
 
 def add_subparser(subparsers: argparse._SubParsersAction) -> None:
@@ -298,6 +306,27 @@ def _resolve_work_path(value: object, *, work_dir: Path) -> Path:
     return (work_dir / path).resolve()
 
 
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[2]
+
+
+def _default_checkpoint_path() -> Path:
+    return _repo_root() / DEFAULT_PUBLIC_CHECKPOINT_RELATIVE
+
+
+def _resolve_checkpoint_option(value: object) -> str:
+    text = _optional_str(value)
+    if text is not None:
+        return text
+    default_path = _default_checkpoint_path()
+    if default_path.is_file():
+        return str(default_path)
+    raise FileNotFoundError(
+        "Weights not found: pretrained_models/cryoFILTER_FULL.pt. "
+        f"Place the default checkpoint at {default_path} or specify a weights path."
+    )
+
+
 def _annotation_session_name(payload: dict[str, Any]) -> str:
     return _optional_str(payload.get("output_name")) or (
         "annotation_" + datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -466,7 +495,8 @@ def _build_infer_spec(payload: dict[str, Any], *, work_dir: Path) -> JobSpec:
         _optional_str(payload.get("output_dir")) or str(work_dir / "cryofilter_output")
     ).expanduser()
     export_masks = _as_bool(payload.get("export_masks"), default=True)
-    binned_masks = _as_bool(payload.get("binned_masks"), default=True)
+    binned_masks = _as_bool(payload.get("binned_masks"), default=False)
+    checkpoint = _resolve_checkpoint_option(payload.get("checkpoint"))
     argv = [
         sys.executable,
         "-m",
@@ -477,7 +507,7 @@ def _build_infer_spec(payload: dict[str, Any], *, work_dir: Path) -> JobSpec:
         "--output-dir",
         str(output_dir),
     ]
-    _add_option(argv, "--checkpoint", payload.get("checkpoint"))
+    _add_option(argv, "--checkpoint", checkpoint)
     _add_option(argv, "--device", payload.get("device"))
     _add_option(argv, "--num-cpus", payload.get("num_cpus"))
     _add_option(argv, "--num-gpus", payload.get("num_gpus"))
@@ -506,6 +536,7 @@ def _build_infer_spec(payload: dict[str, Any], *, work_dir: Path) -> JobSpec:
         artifact_roots=[output_dir],
         metadata={
             "input": input_path,
+            "checkpoint": checkpoint,
             "output_dir": output_dir,
             "num_cpus": payload.get("num_cpus"),
             "num_gpus": payload.get("num_gpus"),
@@ -604,6 +635,12 @@ def _build_cryosparc_predict_spec(payload: dict[str, Any], *, work_dir: Path) ->
     instance_host, instance_port = _instance_url_host_port(
         payload.get("cryosparc_base_url") or payload.get("cryosparc_url")
     )
+    run_root = Path(
+        _optional_str(payload.get("local_run_root")) or str(work_dir / "cryofilter_runs" / "cryosparc")
+    ).expanduser()
+    run_id = _optional_str(payload.get("run_id")) or str(uuid.uuid4())
+    run_dir = run_root / run_id
+    checkpoint = _resolve_checkpoint_option(payload.get("checkpoint"))
     argv = [sys.executable, "-m", "cryofilter.cli", "cryosparc"]
     _add_option(argv, "--config", payload.get("config"))
     _add_option(argv, "--host", payload.get("bridge_host"))
@@ -626,13 +663,15 @@ def _build_cryosparc_predict_spec(payload: dict[str, Any], *, work_dir: Path) ->
             micrographs_ref,
             "--particles",
             particles_ref,
+            "--run-id",
+            run_id,
         ]
     )
-    _add_option(argv, "--checkpoint", payload.get("checkpoint"))
+    _add_option(argv, "--checkpoint", checkpoint)
     _add_option(argv, "--threshold", payload.get("threshold"))
     _add_option(argv, "--title", payload.get("title"))
     _add_option(argv, "--limit-micrographs", payload.get("limit_micrographs"))
-    _add_option(argv, "--local-run-root", payload.get("local_run_root"))
+    _add_option(argv, "--local-run-root", str(run_root))
     _add_option(argv, "--num-cpus", payload.get("num_cpus"))
     _add_option(argv, "--num-gpus", payload.get("num_gpus"))
     _add_option(argv, "--max-transfer-gb", payload.get("max_transfer_gb"))
@@ -645,7 +684,7 @@ def _build_cryosparc_predict_spec(payload: dict[str, Any], *, work_dir: Path) ->
     profile = _optional_str(payload.get("inference_profile"))
     batch_forward_size = _optional_str(payload.get("batch_forward_size"))
     export_masks = _as_bool(payload.get("export_masks"), default=True)
-    binned_masks = _as_bool(payload.get("binned_masks"), default=True)
+    binned_masks = _as_bool(payload.get("binned_masks"), default=False)
     if device or profile or batch_forward_size or infer_args or not export_masks or binned_masks:
         argv.append("--")
         if device:
@@ -660,9 +699,6 @@ def _build_cryosparc_predict_spec(payload: dict[str, Any], *, work_dir: Path) ->
             argv.append("--no-resample")
         argv.extend(infer_args)
 
-    run_root = Path(
-        _optional_str(payload.get("local_run_root")) or str(work_dir / "cryofilter_runs" / "cryosparc")
-    ).expanduser()
     secret_env: dict[str, str] = {}
     cryosparc_password = _optional_str(payload.get("cryosparc_password"))
     if cryosparc_password is not None:
@@ -671,13 +707,16 @@ def _build_cryosparc_predict_spec(payload: dict[str, Any], *, work_dir: Path) ->
         kind="cryosparc_predict",
         title=_optional_str(payload.get("title")) or "CryoSPARC prediction",
         steps=[JobStep("CryoSPARC prediction", argv)],
-        artifact_roots=[run_root],
+        artifact_roots=[run_dir],
         metadata={
             "project": payload.get("project"),
             "workspace": payload.get("workspace"),
             "micrographs": micrographs_ref,
             "particles": particles_ref,
+            "checkpoint": checkpoint,
+            "run_id": run_id,
             "local_run_root": run_root,
+            "local_run_dir": run_dir,
             "run_typing": _as_bool(payload.get("run_typing"), default=True),
             "num_cpus": payload.get("num_cpus"),
             "num_gpus": payload.get("num_gpus"),
@@ -1122,6 +1161,221 @@ def _build_train_spec(payload: dict[str, Any], *, work_dir: Path) -> JobSpec:
     )
 
 
+def _live_summary_slug(label: str) -> str:
+    return str(label).strip().lower().replace(" ", "_").replace("-", "_")
+
+
+def _csv_number(row: dict[str, str], key: str) -> float:
+    try:
+        return float(row.get(key) or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _select_summary_rows(
+    rows: list[dict[str, str]],
+    *,
+    mode: str,
+    count: int,
+) -> list[dict[str, str]]:
+    if mode == "first":
+        return rows[:count]
+    if mode == "last":
+        return rows[-count:]
+    return rows
+
+
+def _normalize_live_summary_mode(value: object) -> str:
+    mode = (_optional_str(value) or "all").lower()
+    return mode if mode in {"all", "first", "last"} else "all"
+
+
+def _normalize_live_summary_count(value: object) -> int:
+    try:
+        count = int(value)
+    except (TypeError, ValueError):
+        return 100
+    return max(1, min(count, 10000))
+
+
+def _resolve_summary_path(raw: object, *, base: Path) -> Path | None:
+    text = _optional_str(raw)
+    if text is None:
+        return None
+    path = Path(text).expanduser()
+    if path.is_absolute():
+        return path
+    return (base / path).resolve()
+
+
+def _candidate_typing_summary_files(roots: Sequence[Path]) -> list[Path]:
+    candidates: list[Path] = []
+    for root in roots:
+        candidates.extend([root / "typing" / "summary.json", root / "summary.json"])
+        if root.exists():
+            candidates.extend(root.glob("*/typing/summary.json"))
+            candidates.extend(root.glob("*/summary.json"))
+    unique = {path.resolve(): path for path in candidates if path.exists() and path.is_file()}
+    return sorted(unique.values(), key=lambda path: path.stat().st_mtime, reverse=True)
+
+
+def _candidate_inference_summary_files(roots: Sequence[Path]) -> list[Path]:
+    candidates: list[Path] = []
+    for root in roots:
+        candidates.extend([root / "inference" / "inference_summary.json", root / "inference_summary.json"])
+        if root.exists():
+            candidates.extend(root.glob("*/inference_summary.json"))
+            candidates.extend(root.glob("*/inference/inference_summary.json"))
+    unique = {path.resolve(): path for path in candidates if path.exists() and path.is_file()}
+    return sorted(unique.values(), key=lambda path: path.stat().st_mtime, reverse=True)
+
+
+def _load_json_object(path: Path) -> dict[str, Any]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError(f"Expected a JSON object: {path}")
+    return payload
+
+
+def _empty_live_summary(message: str) -> dict[str, Any]:
+    return {"ok": True, "available": False, "message": message}
+
+
+def _typing_live_summary(
+    summary_path: Path,
+    *,
+    mode: str,
+    count: int,
+) -> dict[str, Any] | None:
+    summary = _load_json_object(summary_path)
+    csv_path = _resolve_summary_path(
+        summary.get("image_contamination_summary_csv"),
+        base=summary_path.parent,
+    )
+    if csv_path is None or not csv_path.exists():
+        return None
+    with csv_path.open(newline="", encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
+    if not rows:
+        return None
+    selected = _select_summary_rows(rows, mode=mode, count=count)
+    type_order_raw = summary.get("type_order")
+    type_order = [
+        str(label)
+        for label in type_order_raw
+        if str(label).strip()
+    ] if isinstance(type_order_raw, list) else list(CONTAMINATION_TYPE_LABELS)
+    total_pixels = int(round(sum(_csv_number(row, "total_pixels") for row in selected)))
+    contaminated_pixels = int(round(sum(_csv_number(row, "contaminated_pixels") for row in selected)))
+    clean_pixels = max(0, total_pixels - contaminated_pixels)
+    type_rows = []
+    for label in type_order:
+        slug = _live_summary_slug(label)
+        area = int(round(sum(_csv_number(row, f"{slug}_area_px") for row in selected)))
+        type_rows.append(
+            {
+                "label": label,
+                "area_px": area,
+                "color": CONTAMINATION_TYPE_COLORS.get(label, "#8DA0AE"),
+            }
+        )
+    return {
+        "ok": True,
+        "available": True,
+        "source": "typing",
+        "source_path": str(summary_path),
+        "mode": mode,
+        "count": count,
+        "n_images": int(len(selected)),
+        "n_images_total": int(len(rows)),
+        "total_pixels": total_pixels,
+        "contaminated_pixels": contaminated_pixels,
+        "clean_pixels": clean_pixels,
+        "contamination_fraction": float(contaminated_pixels / max(total_pixels, 1)),
+        "types": type_rows,
+    }
+
+
+def _inference_rows(summary: dict[str, Any]) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    for index, item in enumerate(summary.get("inputs", []), start=1):
+        if not isinstance(item, dict):
+            continue
+        mask_meta = item.get("mask_postprocessing")
+        if not isinstance(mask_meta, dict):
+            mask_meta = {}
+        shape = item.get("output_image_shape") or item.get("input_image_shape")
+        total_pixels = 0
+        if isinstance(shape, (list, tuple)) and len(shape) >= 2:
+            total_pixels = int(shape[0]) * int(shape[1])
+        mask_pixels = mask_meta.get("final_mask_pixels")
+        mask_fraction = mask_meta.get("final_mask_fraction")
+        if mask_pixels is None and mask_fraction is not None and total_pixels > 0:
+            mask_pixels = int(round(float(mask_fraction) * total_pixels))
+        if mask_pixels is None:
+            continue
+        rows.append(
+            {
+                "image_id": str(item.get("input_mrc") or f"micrograph_{index:03d}"),
+                "total_pixels": str(total_pixels),
+                "contaminated_pixels": str(int(mask_pixels)),
+            }
+        )
+    return rows
+
+
+def _inference_live_summary(
+    summary_path: Path,
+    *,
+    mode: str,
+    count: int,
+) -> dict[str, Any] | None:
+    rows = _inference_rows(_load_json_object(summary_path))
+    if not rows:
+        return None
+    selected = _select_summary_rows(rows, mode=mode, count=count)
+    total_pixels = int(round(sum(_csv_number(row, "total_pixels") for row in selected)))
+    contaminated_pixels = int(round(sum(_csv_number(row, "contaminated_pixels") for row in selected)))
+    return {
+        "ok": True,
+        "available": True,
+        "source": "inference",
+        "source_path": str(summary_path),
+        "mode": mode,
+        "count": count,
+        "n_images": int(len(selected)),
+        "n_images_total": int(len(rows)),
+        "total_pixels": total_pixels,
+        "contaminated_pixels": contaminated_pixels,
+        "clean_pixels": max(0, total_pixels - contaminated_pixels),
+        "contamination_fraction": float(contaminated_pixels / max(total_pixels, 1)),
+        "types": [],
+    }
+
+
+def _build_live_summary(
+    roots: Sequence[Path],
+    *,
+    mode: str,
+    count: int,
+) -> dict[str, Any]:
+    for summary_path in _candidate_typing_summary_files(roots):
+        try:
+            summary = _typing_live_summary(summary_path, mode=mode, count=count)
+        except Exception:
+            continue
+        if summary is not None:
+            return summary
+    for summary_path in _candidate_inference_summary_files(roots):
+        try:
+            summary = _inference_live_summary(summary_path, mode=mode, count=count)
+        except Exception:
+            continue
+        if summary is not None:
+            return summary
+    return _empty_live_summary("Waiting for inference or typing summary data.")
+
+
 class AppState:
     def __init__(self, work_dir: Path) -> None:
         self.work_dir = work_dir.resolve()
@@ -1435,6 +1689,15 @@ class AppState:
                     return artifacts
         return artifacts
 
+    def live_summary(self, job_id: str, *, mode: str = "all", count: object = 100) -> dict[str, Any]:
+        meta = self.get_job(job_id)
+        roots = [Path(path).expanduser() for path in meta.get("artifact_roots", [])]
+        return _build_live_summary(
+            roots,
+            mode=_normalize_live_summary_mode(mode),
+            count=_normalize_live_summary_count(count),
+        )
+
     def resolve_artifact(self, job_id: str, root_index: int, relative_path: str) -> Path:
         meta = self.get_job(job_id)
         roots = [Path(path).expanduser().resolve() for path in meta.get("artifact_roots", [])]
@@ -1655,6 +1918,12 @@ def make_handler(state: AppState) -> type[BaseHTTPRequestHandler]:
                         return
                     if len(parts) == 4 and parts[3] == "artifacts":
                         self._send_json({"artifacts": state.list_artifacts(parts[2])})
+                        return
+                    if len(parts) == 4 and parts[3] == "live-summary":
+                        query = parse_qs(parsed.query)
+                        mode = query.get("mode", ["all"])[0]
+                        count = query.get("count", ["100"])[0]
+                        self._send_json(state.live_summary(parts[2], mode=mode, count=count))
                         return
                     if len(parts) >= 6 and parts[3] == "artifact":
                         rel = "/".join(parts[5:])

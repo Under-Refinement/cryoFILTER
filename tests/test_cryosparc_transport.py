@@ -916,6 +916,116 @@ def test_run_local_typing_builds_command(monkeypatch: pytest.MonkeyPatch, tmp_pa
     assert calls[0][1]["env"]["OMP_NUM_THREADS"] == "8"
 
 
+def test_refresh_typed_particle_overlays_writes_four_panel_png(tmp_path: Path) -> None:
+    import mrcfile
+    from PIL import Image
+
+    run_dir = tmp_path / "runs" / "00000000-0000-0000-0000-000000000099"
+    transfer_dir = run_dir / "transfer"
+    micrograph_dir = transfer_dir / "micrographs"
+    inference_dir = run_dir / "inference"
+    typing_dir = run_dir / "typing"
+    overlay_dir = inference_dir / "OTF_images"
+    micrograph_dir.mkdir(parents=True)
+    inference_dir.mkdir(parents=True)
+    typing_dir.mkdir(parents=True)
+    overlay_dir.mkdir(parents=True)
+
+    micrograph = micrograph_dir / "mic_001.mrc"
+    yy, xx = np.mgrid[0:48, 0:64]
+    with mrcfile.new(micrograph, overwrite=True) as handle:
+        handle.set_data((np.sin(xx / 7.0) + np.cos(yy / 9.0)).astype(np.float32))
+        handle.voxel_size = 1.5
+    mask = np.zeros((48, 64), dtype=np.uint8)
+    mask[12:36, 28:52] = 1
+    probability = mask.astype(np.float32) * 0.8
+    typed_mask = np.zeros((48, 64), dtype=np.uint8)
+    typed_mask[12:24, 28:52] = 1
+    typed_mask[24:36, 28:52] = 4
+    mask_path = inference_dir / "mic_001_mask.npy"
+    prob_path = inference_dir / "mic_001_prob.npy"
+    typed_dir = typing_dir / "typed_masks"
+    typed_dir.mkdir()
+    typed_path = typed_dir / "P1_W2__mic_001_typed_mask.npy"
+    np.save(mask_path, mask)
+    np.save(prob_path, probability)
+    np.save(typed_path, typed_mask)
+
+    overlay_path = overlay_dir / "mic_001_particle_overlay.png"
+    (run_dir / "transfer_manifest.json").write_text(
+        json.dumps(
+            {
+                "micrographs": [
+                    {
+                        "uid": 7,
+                        "transfer_filename": "micrographs/mic_001.mrc",
+                        "shape_yx": [48, 64],
+                        "pixel_size_angstrom": 1.5,
+                    }
+                ],
+                "particles": [
+                    {"uid": 11, "micrograph_uid": 7, "center_x_frac": 0.5, "center_y_frac": 0.5},
+                    {"uid": 12, "micrograph_uid": 7, "center_x_frac": 0.1, "center_y_frac": 0.1},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (inference_dir / "inference_summary.json").write_text(
+        json.dumps(
+            {
+                "inputs": [
+                    {
+                        "input_mrc": str(micrograph),
+                        "output_mask_npy": str(mask_path),
+                        "output_prob_npy": str(prob_path),
+                        "particle_overlay": {"output_png": str(overlay_path)},
+                    }
+                ],
+                "particle_overlay_rendering": {
+                    "enabled": True,
+                    "output_dir": str(overlay_dir),
+                    "max_display_dim": 64,
+                    "particle_diameter_px": 10,
+                    "mask_alpha": 0.35,
+                    "frames": [{"micrograph": str(micrograph), "output_png": str(overlay_path)}],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    image_csv = typing_dir / "image_contamination_summary.csv"
+    image_csv.write_text(
+        "image_id,dataset_id,stem,total_pixels,contaminated_pixels,carbon_area_px,crystalline_area_px,aggregate_area_px,ethane_area_px\n"
+        "P1_W2__mic_001,P1_W2,mic_001,3072,576,288,0,0,288\n",
+        encoding="utf-8",
+    )
+    (typing_dir / "summary.json").write_text(
+        json.dumps(
+            {
+                "typed_mask_dir": str(typed_dir),
+                "image_contamination_summary_csv": str(image_csv),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    refreshed = remote_cli._refresh_typed_particle_overlays(
+        local_manifest_file=run_dir / "transfer_manifest.json",
+        local_transfer_dir=transfer_dir,
+        local_inference_dir=inference_dir,
+        inference_summary_file=inference_dir / "inference_summary.json",
+        typing_summary_path=typing_dir / "summary.json",
+        particle_exclusion_distance_angstrom=0.0,
+    )
+
+    assert refreshed["refreshed"] == 1
+    frame = Image.open(overlay_path)
+    assert frame.size == (64 * 4 + 16 * 3, 48)
+    summary = json.loads((inference_dir / "inference_summary.json").read_text(encoding="utf-8"))
+    assert summary["particle_overlay_rendering"]["typed_mask_panel"] is True
+
+
 def test_auto_typing_defaults_to_enabled_without_summary(tmp_path: Path) -> None:
     assert remote_cli._resolve_auto_typing(
         argparse.Namespace(run_typing=None),

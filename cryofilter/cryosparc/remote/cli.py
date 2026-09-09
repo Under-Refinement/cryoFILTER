@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import os
 import shutil
@@ -1115,6 +1116,218 @@ def _local_typing_result_files(summary_path: str | Path) -> dict[str, Path]:
     return {key: path for key, path in files.items() if path.exists()}
 
 
+def _load_json_object(path: str | Path) -> dict[str, Any]:
+    payload = json.loads(Path(path).expanduser().read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError(f"Expected a JSON object: {path}")
+    return payload
+
+
+def _resolve_local_result_path(raw: object, *, base: Path) -> Path | None:
+    if not raw:
+        return None
+    path = Path(str(raw)).expanduser()
+    if path.is_absolute():
+        return path
+    return (base / path).resolve()
+
+
+def _load_mrc_2d(path: Path):
+    import mrcfile
+    import numpy as np
+
+    with mrcfile.open(path, permissive=True) as handle:
+        data = np.asarray(handle.data)
+    if data.ndim == 2:
+        return np.asarray(data, dtype=np.float32)
+    if data.ndim == 3 and data.shape[0] > 0:
+        return np.asarray(data[0], dtype=np.float32)
+    raise ValueError(f"Expected 2D MRC data or a stack with at least one plane: {path}")
+
+
+def _typing_mask_lookup(typing_summary_path: Path) -> dict[str, Path]:
+    summary = _load_json_object(typing_summary_path)
+    typed_dir = _resolve_local_result_path(summary.get("typed_mask_dir"), base=typing_summary_path.parent)
+    if typed_dir is None:
+        return {}
+    image_csv = _resolve_local_result_path(
+        summary.get("image_contamination_summary_csv"),
+        base=typing_summary_path.parent,
+    )
+    typed_masks: dict[str, Path] = {}
+    if image_csv is not None and image_csv.exists():
+        with image_csv.open(newline="", encoding="utf-8") as handle:
+            reader = csv.DictReader(handle)
+            for row in reader:
+                dataset_id = str(row.get("dataset_id") or "").strip()
+                stem = str(row.get("stem") or "").strip()
+                if not dataset_id or not stem:
+                    continue
+                path = typed_dir / f"{dataset_id}__{stem}_typed_mask.npy"
+                if path.exists():
+                    typed_masks[f"{dataset_id}__{stem}"] = path
+                    typed_masks.setdefault(stem, path)
+    if not typed_masks and typed_dir.exists():
+        for path in sorted(typed_dir.glob("*_typed_mask.npy")):
+            stem = path.name[: -len("_typed_mask.npy")]
+            typed_masks[stem] = path
+            if "__" in stem:
+                typed_masks.setdefault(stem.rsplit("__", 1)[-1], path)
+    return typed_masks
+
+
+def _inference_summary_rows_by_stem(inference_summary: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    rows: dict[str, dict[str, Any]] = {}
+    for row in inference_summary.get("inputs", []):
+        if not isinstance(row, dict):
+            continue
+        raw_mrc = row.get("input_mrc")
+        if not raw_mrc:
+            continue
+        rows.setdefault(Path(str(raw_mrc)).stem, row)
+    return rows
+
+
+def _refresh_typed_particle_overlays(
+    *,
+    local_manifest_file: Path,
+    local_transfer_dir: Path,
+    local_inference_dir: Path,
+    inference_summary_file: Path,
+    typing_summary_path: Path | None,
+    particle_exclusion_distance_angstrom: float,
+) -> dict[str, Any]:
+    if typing_summary_path is None or not typing_summary_path.exists() or not inference_summary_file.exists():
+        return {"enabled": False, "refreshed": 0}
+
+    import numpy as np
+
+    from cryofilter.particle_filtering import classify_particle_coordinates_by_mask
+    from cryofilter.qc_render import render_particle_overlay_png
+
+    inference_summary = _load_json_object(inference_summary_file)
+    overlay = inference_summary.get("particle_overlay_rendering")
+    if not isinstance(overlay, dict) or not overlay.get("enabled"):
+        return {"enabled": False, "refreshed": 0}
+
+    typed_masks = _typing_mask_lookup(typing_summary_path)
+    if not typed_masks:
+        return {"enabled": True, "refreshed": 0, "missing_typed_masks": True}
+
+    manifest = predict_helpers.load_transfer_manifest(local_manifest_file)
+    micrographs = manifest.get("micrographs")
+    particles = manifest.get("particles")
+    if not isinstance(micrographs, list) or not isinstance(particles, list):
+        return {"enabled": True, "refreshed": 0, "missing_manifest_rows": True}
+
+    particles_by_micrograph: dict[int, list[dict[str, Any]]] = {}
+    for particle in particles:
+        if not isinstance(particle, dict):
+            continue
+        particles_by_micrograph.setdefault(int(particle["micrograph_uid"]), []).append(particle)
+
+    rows_by_stem = _inference_summary_rows_by_stem(inference_summary)
+    refreshed = 0
+    skipped: list[str] = []
+    for entry in micrographs:
+        if not isinstance(entry, dict):
+            continue
+        local_path = predict_helpers._manifest_micrograph_path(local_transfer_dir, entry)
+        stem = local_path.stem
+        row = rows_by_stem.get(stem, {})
+        typed_path = typed_masks.get(stem)
+        if typed_path is None:
+            for key, path in typed_masks.items():
+                if key.endswith(f"__{stem}"):
+                    typed_path = path
+                    break
+        mask_path = _resolve_local_result_path(
+            row.get("output_mask_npy"),
+            base=local_inference_dir,
+        ) or predict_helpers._mask_output_path(local_inference_dir, stem)
+        prob_path = _resolve_local_result_path(
+            row.get("output_prob_npy"),
+            base=local_inference_dir,
+        )
+        particle_overlay = row.get("particle_overlay") if isinstance(row, dict) else None
+        output_png = None
+        if isinstance(particle_overlay, dict):
+            output_png = _resolve_local_result_path(particle_overlay.get("output_png"), base=local_inference_dir)
+        if output_png is None:
+            overlay_dir = _resolve_local_result_path(overlay.get("output_dir"), base=local_inference_dir)
+            if overlay_dir is not None:
+                output_png = overlay_dir / f"{stem}_particle_overlay.png"
+        if typed_path is None or prob_path is None or output_png is None:
+            skipped.append(stem)
+            continue
+        if not local_path.exists() or not mask_path.exists() or not prob_path.exists() or not typed_path.exists():
+            skipped.append(stem)
+            continue
+
+        height, width = predict_helpers._shape_yx(entry, local_path)
+        pixel_size = predict_helpers._pixel_size_angstrom(entry, local_path)
+        micrograph_particles = particles_by_micrograph.get(int(entry["uid"]), [])
+        coords = np.asarray(
+            [
+                (
+                    float(particle["center_x_frac"]) * float(width),
+                    float(particle["center_y_frac"]) * float(height),
+                )
+                for particle in micrograph_particles
+                if isinstance(particle, dict)
+            ],
+            dtype=np.float32,
+        ).reshape(-1, 2)
+        mask = np.asarray(np.load(mask_path), dtype=bool)
+        keep, _distances = classify_particle_coordinates_by_mask(
+            coords,
+            bad_mask=mask,
+            input_shape=(int(height), int(width)),
+            pixel_size_angstrom=float(pixel_size),
+            exclusion_distance_angstrom=float(particle_exclusion_distance_angstrom),
+        )
+        image = _load_mrc_2d(local_path)
+        render_particle_overlay_png(
+            image=image,
+            mask=mask,
+            coords_xy=coords,
+            keep=keep,
+            output_path=output_png,
+            probability_map=np.load(prob_path),
+            typed_mask=np.load(typed_path),
+            label=(
+                f"{local_path.name}   kept {int(np.count_nonzero(keep))} / "
+                f"rejected {int(len(keep) - np.count_nonzero(keep))}"
+            ),
+            max_display_dim=int(overlay.get("max_display_dim") or 1400),
+            particle_diameter_px=float(overlay.get("particle_diameter_px") or 34.0),
+            mask_alpha=float(overlay.get("mask_alpha") or 0.35),
+            include_raw_panel=True,
+            include_typed_mask_panel=True,
+            include_probability_panel=True,
+        )
+        if isinstance(particle_overlay, dict):
+            particle_overlay["typed_mask_npy"] = str(typed_path)
+            particle_overlay["typed_mask_panel"] = True
+        refreshed += 1
+
+    overlay["typed_mask_panel"] = refreshed > 0
+    overlay["panel_layout"] = [
+        "raw_micrograph",
+        "mask_and_particles",
+        "typed_mask",
+        "probability_map",
+    ]
+    overlay["typed_mask_refresh"] = {
+        "refreshed": int(refreshed),
+        "skipped": int(len(skipped)),
+        "skipped_stems": skipped[:10],
+        "typing_summary": str(typing_summary_path),
+    }
+    inference_summary_file.write_text(json.dumps(inference_summary, indent=2) + "\n", encoding="utf-8")
+    return {"enabled": True, "refreshed": int(refreshed), "skipped": int(len(skipped))}
+
+
 def _finalize_prediction_remote(
     *,
     config: CryoSPARCIntegrationConfig,
@@ -1276,6 +1489,16 @@ def _finalize_local_run_outputs(
             "source": "provided",
             "summary_file": str(typing_summary_path),
         }
+
+    if typing_summary_path is not None:
+        payload["typed_otf_overlays"] = _refresh_typed_particle_overlays(
+            local_manifest_file=local_manifest_file,
+            local_transfer_dir=local_transfer_dir,
+            local_inference_dir=local_inference_dir,
+            inference_summary_file=inference_summary_file,
+            typing_summary_path=typing_summary_path,
+            particle_exclusion_distance_angstrom=float(particle_exclusion_distance_angstrom),
+        )
 
     split = predict_helpers.classify_particles_from_manifest(
         transfer_manifest_file=local_manifest_file,
