@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import errno
 import json
 import mimetypes
 import os
@@ -34,6 +35,7 @@ from cryofilter.app.annotation_manifest import (
 
 APP_DIRNAME = ".cryofilter_app"
 MAX_LOG_BYTES_DEFAULT = 256_000
+APP_PORT_SEARCH_LIMIT = 50
 ARTIFACT_SUFFIXES = {
     ".png",
     ".jpg",
@@ -74,19 +76,23 @@ def add_subparser(subparsers: argparse._SubParsersAction) -> None:
 
 def run(args: argparse.Namespace) -> int:
     state = AppState(Path(args.work_dir).expanduser().resolve())
-    server = CryoFilterHTTPServer(
-        (str(args.host), int(args.port)),
-        make_handler(state),
+    requested_port = int(args.port)
+    server, bound_port = _bind_app_server(
+        host=str(args.host),
+        port=requested_port,
+        handler_cls=make_handler(state),
     )
-    url = f"http://{args.host}:{args.port}/"
+    if requested_port != 0 and bound_port != requested_port:
+        print(f"Port {requested_port} is in use; using {bound_port} instead.", flush=True)
+    url = f"http://{args.host}:{bound_port}/"
     print(f"cryoFILTER app listening at {url}", flush=True)
     if str(args.host) in {"127.0.0.1", "localhost", "::1"}:
         print(
-            f"Laptop browser URL with SSH forwarding: http://127.0.0.1:{args.port}/",
+            f"Laptop browser URL with SSH forwarding: http://127.0.0.1:{bound_port}/",
             flush=True,
         )
         print(
-            f"SSH example: ssh -L {args.port}:127.0.0.1:{args.port} user@their-server",
+            f"SSH example: ssh -L {bound_port}:127.0.0.1:{bound_port} user@their-server",
             flush=True,
         )
     print(f"State directory: {state.data_dir}", flush=True)
@@ -97,6 +103,36 @@ def run(args: argparse.Namespace) -> int:
     finally:
         server.server_close()
     return 0
+
+
+def _bind_app_server(
+    *,
+    host: str,
+    port: int,
+    handler_cls: type[BaseHTTPRequestHandler],
+    search_limit: int = APP_PORT_SEARCH_LIMIT,
+) -> tuple["CryoFilterHTTPServer", int]:
+    if port < 0 or port > 65535:
+        raise ValueError("--port must be between 0 and 65535")
+    if port == 0:
+        server = CryoFilterHTTPServer((host, port), handler_cls)
+        return server, int(server.server_address[1])
+
+    last_port = min(65535, port + max(0, int(search_limit)))
+    last_error: OSError | None = None
+    for candidate in range(port, last_port + 1):
+        try:
+            server = CryoFilterHTTPServer((host, candidate), handler_cls)
+        except OSError as exc:
+            if exc.errno != errno.EADDRINUSE:
+                raise
+            last_error = exc
+            continue
+        return server, candidate
+    raise OSError(
+        errno.EADDRINUSE,
+        f"No available port found from {port} through {last_port}",
+    ) from last_error
 
 
 def utc_now() -> str:

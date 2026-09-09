@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import socket
 import sys
 from pathlib import Path
 
@@ -11,7 +12,9 @@ import pytest
 from cryofilter.app.server import (
     ARTIFACT_SUFFIXES,
     AppState,
+    _bind_app_server,
     build_job_spec,
+    make_handler,
     runtime_status,
     validate_cryosparc_connection,
 )
@@ -28,6 +31,28 @@ def test_app_parser_aliases_are_available() -> None:
     args = parser.parse_args(["studio", "--work-dir", "runs"])
     assert args.command == "studio"
     assert args.work_dir == "runs"
+
+
+def test_app_server_uses_next_available_port(tmp_path: Path) -> None:
+    holder = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server = None
+    try:
+        holder.bind(("127.0.0.1", 0))
+        holder.listen(1)
+        busy_port = int(holder.getsockname()[1])
+
+        server, bound_port = _bind_app_server(
+            host="127.0.0.1",
+            port=busy_port,
+            handler_cls=make_handler(AppState(tmp_path)),
+            search_limit=10,
+        )
+
+        assert bound_port > busy_port
+    finally:
+        if server is not None:
+            server.server_close()
+        holder.close()
 
 
 def test_infer_job_spec_builds_cli_command(tmp_path: Path) -> None:
