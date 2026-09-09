@@ -1615,7 +1615,7 @@ function formatThroughputSeconds(seconds) {
 }
 
 function optionValue(job, option) {
-  for (const step of job.steps || []) {
+  for (const step of job?.steps || []) {
     const argv = step.argv || [];
     const prefix = `${option}=`;
     for (let index = 0; index < argv.length; index += 1) {
@@ -1652,66 +1652,119 @@ function progressSamples(logText) {
   return samples;
 }
 
-function latestMicrographProgress(logText) {
-  const samples = progressSamples(logText);
-  if (samples.length) return samples.at(-1);
+function finalInferenceCompletedCount(logText) {
+  const matches = Array.from(String(logText || "").matchAll(/^Finished inference on\s+(\d+)\s+micrograph/gim));
+  if (!matches.length) return null;
+  const completed = Number(matches.at(-1)[1]);
+  return Number.isFinite(completed) && completed > 0 ? completed : null;
+}
 
-  const bracketMatches = Array.from(String(logText || "").matchAll(/^\[(\d+)\/(\d+)\]/gm));
-  if (!bracketMatches.length) return null;
-  const last = bracketMatches.at(-1);
-  const current = Number(last[1]);
-  const total = Number(last[2]);
-  const overlayCount = (String(logText || "").match(/particle overlay:/g) || []).length;
-  const completed = Math.max(overlayCount, current > 0 ? current - 1 : 0);
-  return { completed, total, elapsedSeconds: null };
+function totalMicrographCountFromLog(logText) {
+  const text = String(logText || "");
+  const multiGpuMatches = Array.from(text.matchAll(/Using\s+\d+\s+GPUs?\s+for\s+(\d+)\s+micrograph/gim));
+  if (multiGpuMatches.length) {
+    const total = Number(multiGpuMatches.at(-1)[1]);
+    if (Number.isFinite(total) && total > 0) return total;
+  }
+  return finalInferenceCompletedCount(text);
+}
+
+function bracketMicrographProgress(job, logText) {
+  const text = String(logText || "");
+  const matches = Array.from(text.matchAll(/^\[(\d+)\/(\d+)\]\s+(.+)$/gm));
+  if (!matches.length) return null;
+  const finalCompleted = finalInferenceCompletedCount(text);
+  let shardTotal = 0;
+  const startedImages = new Set();
+  for (const match of matches) {
+    shardTotal = Math.max(shardTotal, Number(match[2]) || 0);
+    const imageLabel = String(match[3] || "").split(":")[0].trim();
+    startedImages.add(imageLabel || `${match[1]}:${match.index}`);
+  }
+  const total = totalMicrographCountFromLog(text) || shardTotal;
+  if (finalCompleted) {
+    return { completed: finalCompleted, total: total || finalCompleted, elapsedSeconds: null };
+  }
+  const activeWorkers = Math.max(1, requestedGpuCount(job, text) || 1);
+  return {
+    completed: Math.max(0, startedImages.size - activeWorkers),
+    total,
+    elapsedSeconds: null,
+  };
+}
+
+function latestMicrographProgress(job, logText, liveSummary = null) {
+  const totalFromLog = totalMicrographCountFromLog(logText);
+  const finalCompleted = finalInferenceCompletedCount(logText);
+  if (finalCompleted) {
+    return { completed: finalCompleted, total: totalFromLog || finalCompleted, elapsedSeconds: null };
+  }
+  if (liveSummary?.available && Number.isFinite(Number(liveSummary.n_images_total)) && Number(liveSummary.n_images_total) > 0) {
+    return {
+      completed: Number(liveSummary.n_images_total),
+      total: totalFromLog || Number(liveSummary.n_images_total),
+      elapsedSeconds: null,
+    };
+  }
+  const samples = progressSamples(logText);
+  if (samples.length) {
+    const latest = samples.at(-1);
+    return { ...latest, total: totalFromLog || latest.total };
+  }
+  return bracketMicrographProgress(job, logText);
 }
 
 function requestedGpuCount(job, logText) {
+  const multiGpu = String(logText || "").match(/Using\s+(\d+)\s+GPUs?\s+for\s+\d+\s+micrograph/i);
+  if (multiGpu) {
+    const count = Number(multiGpu[1]);
+    if (Number.isFinite(count) && count > 0) return count;
+  }
   const parallel = String(logText || "").match(/Using DataParallel across\s+(\d+)\s+CUDA GPUs/i);
   if (parallel) {
     const count = Number(parallel[1]);
     if (Number.isFinite(count) && count > 0) return count;
   }
+  const requested = Number(optionValue(job, "--num-gpus"));
+  if (Number.isFinite(requested) && requested > 0) return requested;
   if (/Using device=cuda/i.test(logText) || optionValue(job, "--device") === "cuda") return 1;
   return 0;
 }
 
-function rollingMicrographGpuSeconds(samples, gpus) {
-  if (!Array.isArray(samples) || !samples.length || !gpus) return null;
+function rollingMicrographSeconds(samples) {
+  if (!Array.isArray(samples) || !samples.length) return null;
   const latest = samples.at(-1);
   if (samples.length >= 2) {
     const start = samples[Math.max(0, samples.length - 6)];
     const imageCount = Number(latest.completed) - Number(start.completed);
     const elapsed = Number(latest.elapsedSeconds) - Number(start.elapsedSeconds);
     if (Number.isFinite(imageCount) && imageCount > 0 && Number.isFinite(elapsed) && elapsed > 0) {
-      return { seconds: elapsed / imageCount / gpus, images: imageCount };
+      return { seconds: elapsed / imageCount, images: imageCount };
     }
   }
   if (Number.isFinite(latest.lastSeconds) && latest.lastSeconds > 0) {
-    return { seconds: latest.lastSeconds / gpus, images: 1 };
+    return { seconds: latest.lastSeconds, images: 1 };
   }
   return null;
 }
 
-function timePerMicrographGpuMetric(job, logText) {
+function timePerMicrographMetric(job, logText, liveSummary = null) {
   const samples = progressSamples(logText);
-  const progress = latestMicrographProgress(logText);
+  const progress = latestMicrographProgress(job, logText, liveSummary);
   if (!progress || !Number.isFinite(progress.completed) || progress.completed <= 0) return null;
-  const gpus = requestedGpuCount(job, logText);
-  if (!gpus) return { label: "~time/micrograph/gpu", value: "cpu run" };
   const elapsed = progress.elapsedSeconds ?? durationSeconds(job.started_at || job.created_at, job.ended_at);
   if (!Number.isFinite(elapsed) || elapsed <= 0) return null;
-  const seconds = elapsed / progress.completed / gpus;
+  const seconds = elapsed / progress.completed;
   const average = formatThroughputSeconds(seconds);
   if (!average) return null;
-  const recent = rollingMicrographGpuSeconds(samples, gpus);
+  const recent = rollingMicrographSeconds(samples);
   const pieces = [`avg ${average}`];
   if (recent) {
     const recentText = formatThroughputSeconds(recent.seconds);
-    if (recentText) pieces.push(`last${recent.images} ${recentText}`);
+    if (recentText) pieces.push(`last ${recent.images} ${recentText}`);
   }
   const suffix = progress.total ? ` (${progress.completed}/${progress.total})` : "";
-  return { label: "~time/micrograph/gpu", value: `${pieces.join(" | ")}${suffix}` };
+  return { label: "~time/micrograph", value: `${pieces.join(" | ")}${suffix}` };
 }
 
 function jobSubline(job) {
@@ -1845,8 +1898,8 @@ async function renderSelected() {
     logEl.scrollTop = logEl.scrollHeight;
   }
   const artifactCount = await renderArtifacts();
-  renderMetrics(job, log.text || "", artifactCount);
-  await renderLiveSummary(job);
+  const liveSummary = await renderLiveSummary(job);
+  renderMetrics(job, log.text || "", artifactCount, liveSummary);
 }
 
 async function renderArtifacts() {
@@ -1864,23 +1917,24 @@ async function renderArtifacts() {
   grid.innerHTML = [...images, ...other].map((artifact) => {
     const name = escapeHtml(artifact.relative_path || artifact.name);
     if ([".png", ".jpg", ".jpeg"].includes(artifact.suffix)) {
-      return `<a class="artifact image" href="${escapeHtml(artifact.url)}" target="_blank"><img src="${escapeHtml(artifact.url)}" alt="${name}" loading="lazy"><span>${name}</span></a>`;
+      const imageUrl = `${artifact.url}?v=${encodeURIComponent(String(artifact.mtime || ""))}`;
+      return `<a class="artifact image" href="${escapeHtml(artifact.url)}" target="_blank" aria-label="${name}"><img src="${escapeHtml(imageUrl)}" alt="" loading="lazy"><span>${name}</span></a>`;
     }
     return `<a class="artifact" href="${escapeHtml(artifact.url)}" target="_blank"><span>${name}</span></a>`;
   }).join("");
   return artifacts.length;
 }
 
-function renderMetrics(job, logText, artifactCount) {
+function renderMetrics(job, logText, artifactCount, liveSummary = null) {
   const metrics = $("#metricsGrid");
   const rejected = parseRejectedMetric(logText);
-  const timePerMicGpu = timePerMicrographGpuMetric(job, logText);
+  const timePerMic = timePerMicrographMetric(job, logText, liveSummary);
   const rows = [
     { label: "status", value: statusText(job.status) },
     { label: "runtime", value: durationText(job.started_at || job.created_at, job.ended_at) },
     { label: "artifacts", value: String(artifactCount) },
   ];
-  if (timePerMicGpu) rows.push(timePerMicGpu);
+  if (timePerMic) rows.push(timePerMic);
   if (rejected) rows.push(rejected);
   metrics.hidden = false;
   metrics.innerHTML = rows.map((row) => `
@@ -1908,11 +1962,11 @@ async function renderLiveSummary(job) {
   const panel = $("#liveSummary");
   const charts = $("#liveSummaryCharts");
   const meta = $("#liveSummaryMeta");
-  if (!panel || !charts || !meta) return;
+  if (!panel || !charts || !meta) return null;
   if (!state.selected || !liveSummaryJobKind(job)) {
     panel.hidden = true;
     charts.innerHTML = "";
-    return;
+    return null;
   }
   syncLiveSummaryControls();
   panel.hidden = false;
@@ -1928,7 +1982,7 @@ async function renderLiveSummary(job) {
         renderPieBlock("Clean vs contamination", [], "0%", "Waiting for image rows"),
         renderPieBlock("Type breakdown", [], "0%", "Waiting for typing"),
       ].join("");
-      return;
+      return summary;
     }
     meta.textContent = liveSummaryMeta(summary);
     const contaminationPct = percent(summary.contamination_fraction || 0);
@@ -1958,9 +2012,11 @@ async function renderLiveSummary(job) {
       ),
       renderPieBlock("Type breakdown", typeSegments, typeCenter, typeSubline),
     ].join("");
+    return summary;
   } catch (error) {
     meta.textContent = error.message;
     charts.innerHTML = "";
+    return null;
   }
 }
 
@@ -1969,7 +2025,12 @@ function liveSummaryMeta(summary) {
   const range = mode === "all"
     ? "whole data set"
     : `${mode === "last" ? "last" : "first"} ${Number(summary.n_images || 0).toLocaleString()} images`;
-  const source = summary.source === "typing" ? "typing" : "inference";
+  const sourceLabels = {
+    typing: "typing",
+    multi_gpu_workers: "multi-GPU inference",
+    inference: "inference",
+  };
+  const source = sourceLabels[summary.source] || "inference";
   return `${Number(summary.n_images || 0).toLocaleString()}/${Number(summary.n_images_total || 0).toLocaleString()} images | ${range} | ${source}`;
 }
 

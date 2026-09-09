@@ -1230,6 +1230,16 @@ def _candidate_inference_summary_files(roots: Sequence[Path]) -> list[Path]:
     return sorted(unique.values(), key=lambda path: path.stat().st_mtime, reverse=True)
 
 
+def _candidate_worker_inference_summary_files(roots: Sequence[Path]) -> list[Path]:
+    candidates: list[Path] = []
+    for root in roots:
+        candidates.extend(root.glob(".cryofilter_worker_*_summary.json") if root.exists() else [])
+        candidates.extend(root.glob("*/.cryofilter_worker_*_summary.json") if root.exists() else [])
+        candidates.extend(root.glob("*/*/.cryofilter_worker_*_summary.json") if root.exists() else [])
+    unique = {path.resolve(): path for path in candidates if path.exists() and path.is_file()}
+    return sorted(unique.values(), key=lambda path: str(path))
+
+
 def _load_json_object(path: Path) -> dict[str, Any]:
     payload = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
@@ -1333,14 +1343,33 @@ def _inference_live_summary(
     rows = _inference_rows(_load_json_object(summary_path))
     if not rows:
         return None
+    return _inference_live_summary_from_rows(
+        rows,
+        mode=mode,
+        count=count,
+        source="inference",
+        source_path=summary_path,
+    )
+
+
+def _inference_live_summary_from_rows(
+    rows: list[dict[str, str]],
+    *,
+    mode: str,
+    count: int,
+    source: str,
+    source_path: Path | None = None,
+    source_paths: Sequence[Path] | None = None,
+) -> dict[str, Any] | None:
+    if not rows:
+        return None
     selected = _select_summary_rows(rows, mode=mode, count=count)
     total_pixels = int(round(sum(_csv_number(row, "total_pixels") for row in selected)))
     contaminated_pixels = int(round(sum(_csv_number(row, "contaminated_pixels") for row in selected)))
-    return {
+    payload: dict[str, Any] = {
         "ok": True,
         "available": True,
-        "source": "inference",
-        "source_path": str(summary_path),
+        "source": source,
         "mode": mode,
         "count": count,
         "n_images": int(len(selected)),
@@ -1351,6 +1380,41 @@ def _inference_live_summary(
         "contamination_fraction": float(contaminated_pixels / max(total_pixels, 1)),
         "types": [],
     }
+    if source_path is not None:
+        payload["source_path"] = str(source_path)
+    if source_paths is not None:
+        payload["source_paths"] = [str(path) for path in source_paths]
+        payload["worker_count"] = int(len(source_paths))
+    return payload
+
+
+def _worker_inference_live_summary(
+    summary_paths: Sequence[Path],
+    *,
+    mode: str,
+    count: int,
+) -> dict[str, Any] | None:
+    rows: list[dict[str, str]] = []
+    loaded_paths: list[Path] = []
+    for summary_path in summary_paths:
+        try:
+            worker_rows = _inference_rows(_load_json_object(summary_path))
+        except Exception:
+            continue
+        if not worker_rows:
+            continue
+        rows.extend(worker_rows)
+        loaded_paths.append(summary_path)
+    if not rows:
+        return None
+    rows.sort(key=lambda row: row.get("image_id", ""))
+    return _inference_live_summary_from_rows(
+        rows,
+        mode=mode,
+        count=count,
+        source="multi_gpu_workers",
+        source_paths=loaded_paths,
+    )
 
 
 def _build_live_summary(
@@ -1371,6 +1435,11 @@ def _build_live_summary(
             summary = _inference_live_summary(summary_path, mode=mode, count=count)
         except Exception:
             continue
+        if summary is not None:
+            return summary
+    worker_summary_paths = _candidate_worker_inference_summary_files(roots)
+    if worker_summary_paths:
+        summary = _worker_inference_live_summary(worker_summary_paths, mode=mode, count=count)
         if summary is not None:
             return summary
     return _empty_live_summary("Waiting for inference or typing summary data.")

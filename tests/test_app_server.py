@@ -727,6 +727,58 @@ def test_app_state_live_summary_aggregates_typing_range(tmp_path: Path) -> None:
     }
 
 
+def test_app_state_live_summary_aggregates_multi_gpu_worker_summaries(tmp_path: Path) -> None:
+    state = AppState(tmp_path)
+    job_id = "workers123"
+    run_dir = tmp_path / "runs" / "one"
+    inference_dir = run_dir / "inference"
+    inference_dir.mkdir(parents=True)
+    for worker_index, rows in enumerate(
+        [
+            [
+                ("b.mrc", [10, 10], 20),
+                ("d.mrc", [20, 10], 40),
+            ],
+            [
+                ("a.mrc", [10, 10], 10),
+                ("c.mrc", [10, 20], 30),
+            ],
+        ]
+    ):
+        (inference_dir / f".cryofilter_worker_{worker_index:02d}_summary.json").write_text(
+            json.dumps(
+                {
+                    "inputs": [
+                        {
+                            "input_mrc": name,
+                            "output_image_shape": shape,
+                            "mask_postprocessing": {"final_mask_pixels": pixels},
+                        }
+                        for name, shape, pixels in rows
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+    job_dir = state.jobs_dir / job_id
+    job_dir.mkdir(parents=True)
+    (job_dir / "meta.json").write_text(
+        json.dumps({"id": job_id, "kind": "cryosparc_predict", "artifact_roots": [str(run_dir)]}),
+        encoding="utf-8",
+    )
+
+    summary = state.live_summary(job_id, mode="last", count=3)
+
+    assert summary["available"] is True
+    assert summary["source"] == "multi_gpu_workers"
+    assert summary["worker_count"] == 2
+    assert summary["n_images"] == 3
+    assert summary["n_images_total"] == 4
+    assert summary["total_pixels"] == 500
+    assert summary["contaminated_pixels"] == 90
+    assert summary["clean_pixels"] == 410
+
+
 def test_runtime_status_reports_display_metadata(monkeypatch) -> None:
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
 

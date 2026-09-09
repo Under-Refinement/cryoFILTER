@@ -1152,7 +1152,10 @@ def _finalize_inference_run(
 
 
 def _write_inference_summary(path: Path, summary: dict[str, object]) -> None:
-    path.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(f".{path.name}.tmp.{os.getpid()}")
+    tmp_path.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
+    tmp_path.replace(path)
 
 
 def _run_infer(
@@ -1160,6 +1163,7 @@ def _run_infer(
     *,
     mrc_paths_override: Optional[Sequence[Path]] = None,
     finalize: bool = True,
+    live_summary_path: Optional[Path] = None,
 ) -> int | dict[str, object]:
     import torch
     from models.bad_region_detector import create_model
@@ -1521,6 +1525,11 @@ def _run_infer(
         ),
         "inputs": [],
     }
+    incremental_summary_path = (
+        live_summary_path
+        if live_summary_path is not None
+        else (output_dir / "inference_summary.json" if finalize else None)
+    )
 
     for idx, mrc_path in enumerate(mrc_paths, start=1):
         stem = mrc_path.stem
@@ -1575,8 +1584,8 @@ def _run_infer(
                 particle_overlay_context["frame_paths"].append(particle_overlay_png)
                 particle_overlay_context["frame_borders"].append(None)
             summary["inputs"].append(skipped_record)
-            if finalize:
-                _write_inference_summary(output_dir / "inference_summary.json", summary)
+            if incremental_summary_path is not None:
+                _write_inference_summary(incremental_summary_path, summary)
             continue
 
         image, header_pixel_size = _load_mrc_2d(mrc_path)
@@ -1807,8 +1816,8 @@ def _run_infer(
                 pixel_size_angstrom=pixel_size,
             )
         summary["inputs"].append(input_record)
-        if finalize:
-            _write_inference_summary(output_dir / "inference_summary.json", summary)
+        if incremental_summary_path is not None:
+            _write_inference_summary(incremental_summary_path, summary)
 
     if particle_overlay_context is not None:
         _finalize_particle_overlay_contact_sheet(particle_overlay_context, args)
@@ -1837,10 +1846,15 @@ def _multi_gpu_worker(
     worker_args.filtered_particle_file = None
     worker_args.particle_csg = None
     worker_args.render_particle_overlays = False
-    result = _run_infer(worker_args, mrc_paths_override=mrc_paths, finalize=False)
+    result = _run_infer(
+        worker_args,
+        mrc_paths_override=mrc_paths,
+        finalize=False,
+        live_summary_path=worker_summary_path,
+    )
     if not isinstance(result, dict):
         raise RuntimeError("Multi-GPU inference worker did not return an inference summary")
-    worker_summary_path.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+    _write_inference_summary(worker_summary_path, result)
 
 
 def _run_multi_gpu_infer(args: argparse.Namespace, devices: Sequence[str]) -> int:
@@ -1897,6 +1911,10 @@ def _run_multi_gpu_infer(args: argparse.Namespace, devices: Sequence[str]) -> in
     print(
         f"Using {len(active_devices)} GPUs for {len(mrc_paths)} micrograph(s): "
         + ", ".join(active_devices),
+        flush=True,
+    )
+    print(
+        "Worker progress counters are per-GPU shard; the app aggregates completed micrographs across workers.",
         flush=True,
     )
 
