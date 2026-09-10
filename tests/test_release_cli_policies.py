@@ -284,6 +284,7 @@ def test_multi_gpu_worker_preserves_live_particle_overlays(tmp_path: Path, monke
         captured["particle_file"] = args.particle_file
         captured["render_particle_overlays"] = args.render_particle_overlays
         captured["filtered_particle_file"] = args.filtered_particle_file
+        captured["allow_unmatched_particles"] = args.allow_unmatched_particles
         captured["particle_overlay_contact_sheet"] = args.particle_overlay_contact_sheet
         captured["finalize"] = finalize
         captured["live_summary_path"] = live_summary_path
@@ -297,6 +298,7 @@ def test_multi_gpu_worker_preserves_live_particle_overlays(tmp_path: Path, monke
             "filtered_particle_file": "filtered.star",
             "render_particle_overlays": True,
             "particle_overlay_contact_sheet": True,
+            "allow_unmatched_particles": False,
         },
         [tmp_path / "mic_001.mrc"],
         tmp_path / "worker_summary.json",
@@ -306,6 +308,7 @@ def test_multi_gpu_worker_preserves_live_particle_overlays(tmp_path: Path, monke
         "particle_file": "particles.star",
         "render_particle_overlays": True,
         "filtered_particle_file": None,
+        "allow_unmatched_particles": True,
         "particle_overlay_contact_sheet": False,
         "finalize": False,
         "live_summary_path": tmp_path / "worker_summary.json",

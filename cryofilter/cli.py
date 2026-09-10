@@ -1916,6 +1916,7 @@ def _multi_gpu_worker(
     """Spawn-safe worker entry point; particle filtering is finalized by the parent."""
     worker_args = argparse.Namespace(**args_payload)
     worker_args.filtered_particle_file = None
+    worker_args.allow_unmatched_particles = True
     worker_args.particle_overlay_contact_sheet = False
     result = _run_infer(
         worker_args,
