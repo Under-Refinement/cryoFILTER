@@ -119,6 +119,8 @@ cryofilter app
 
 **CryoSPARC:** Connect with the CryoSPARC instance URL, username/email, and password in the app. Then provide project/workspace IDs, a micrograph output such as `J54` or `J54:micrographs`, a particle output such as `J56` or `J56:particles`, and the checkpoint path. The app creates a CryoSPARC External Job with accepted/rejected particles and diagnostics.
 
+The CryoSPARC form exposes **CPUs**, **Typing workers**, and **Typing updates**. Live background typing reuses per-image features while inference continues; Final only starts typing after inference. An explicit CPU budget is shared between inference and live typing, and a one-CPU budget uses final-only typing. The monitor reports completed inference images and typed images separately, with finalization and upload shown as distinct phases.
+
 **Mask generation:** Use Inference with micrographs, weights, and an output directory. Particles are optional, so this can generate masks only.
 
 **Particle filtering:** Use Filter Picks when masks already exist and you want to filter new or re-exported particle picks without rerunning inference.

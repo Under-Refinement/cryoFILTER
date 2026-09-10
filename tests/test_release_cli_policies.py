@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import csv
+import json
+import os
 from pathlib import Path
 
 import mrcfile
@@ -21,12 +23,14 @@ from cryofilter.cli import (
     DEFAULT_PUBLIC_NORMALIZATION_METHOD,
     DEFAULT_PUBLIC_OVERLAP,
     DEFAULT_PUBLIC_TARGET_PIXEL_SIZE,
+    _cpu_threads_per_gpu_worker,
     _build_parser,
     _default_output_dir_for_input,
     _merge_worker_summaries,
     _multi_gpu_worker,
     _resolve_auto_batch_forward_size,
     _resolve_inference_devices,
+    _run_multi_gpu_infer,
     _shard_mrc_paths,
     _write_typing_manifest,
 )
@@ -77,6 +81,13 @@ def test_rtx_4090_uses_fast_auto_batch_despite_reported_memory_rounding() -> Non
     assert _resolve_auto_batch_forward_size("Unknown 24GB-ish GPU", 23.988) == 32
     assert _resolve_auto_batch_forward_size("NVIDIA RTX A4000", 16.0) == 16
     assert _resolve_auto_batch_forward_size("small GPU", 12.0) == 8
+
+
+def test_cpu_threads_are_split_across_gpu_workers() -> None:
+    assert _cpu_threads_per_gpu_worker(None, 4) is None
+    assert _cpu_threads_per_gpu_worker(32, 4) == 8
+    assert _cpu_threads_per_gpu_worker(10, 4) == 2
+    assert _cpu_threads_per_gpu_worker(2, 4) == 1
 
 
 def test_small_pixel_policy_triggers_for_1106_apix() -> None:
@@ -313,6 +324,113 @@ def test_multi_gpu_worker_preserves_live_particle_overlays(tmp_path: Path, monke
         "finalize": False,
         "live_summary_path": tmp_path / "worker_summary.json",
     }
+
+
+def test_single_gpu_wrapper_preserves_live_summary_file(tmp_path: Path, monkeypatch) -> None:
+    input_dir = tmp_path / "micrographs"
+    output_dir = tmp_path / "output"
+    live_summary = output_dir / ".cryofilter_worker_00_summary.json"
+    input_dir.mkdir()
+    (input_dir / "mic_001.mrc").write_bytes(b"")
+    captured = {}
+
+    def fake_run_infer(args, *, live_summary_path):
+        captured["device"] = args.device
+        captured["live_summary_path"] = live_summary_path
+        return 0
+
+    monkeypatch.setattr("cryofilter.cli._run_infer", fake_run_infer)
+    args = _build_parser().parse_args(
+        [
+            "infer",
+            "--input",
+            str(input_dir),
+            "--output-dir",
+            str(output_dir),
+            "--live-summary-file",
+            str(live_summary),
+        ]
+    )
+
+    assert _run_multi_gpu_infer(args, ["cuda:0"]) == 0
+    assert captured == {
+        "device": "cuda:0",
+        "live_summary_path": live_summary.resolve(),
+    }
+
+
+def test_multi_gpu_infer_treats_num_cpus_as_total_worker_budget(tmp_path: Path, monkeypatch) -> None:
+    input_dir = tmp_path / "micrographs"
+    output_dir = tmp_path / "output"
+    input_dir.mkdir()
+    for index in range(4):
+        (input_dir / f"mic_{index}.mrc").write_bytes(b"")
+
+    worker_payloads = []
+    finalized = {}
+
+    class FakeProcess:
+        def __init__(self, *, target, args, name):
+            self.target = target
+            self.args = args
+            self.name = name
+            self.exitcode = None
+
+        def start(self):
+            payload, shard, worker_summary_path = self.args
+            worker_payloads.append(payload)
+            worker_summary_path.write_text(
+                json.dumps(
+                    {
+                        "inputs": [
+                            {
+                                "input_mrc": str(path),
+                                "output_image_shape": [10, 10],
+                                "mask_postprocessing": {"final_mask_pixels": 1},
+                            }
+                            for path in shard
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            self.exitcode = 0
+
+        def join(self):
+            return None
+
+    class FakeContext:
+        def Process(self, *, target, args, name):
+            return FakeProcess(target=target, args=args, name=name)
+
+    def fake_finalize(**kwargs):
+        finalized.update(kwargs)
+        return 0
+
+    monkeypatch.setattr("cryofilter.cli.mp.get_context", lambda _name: FakeContext())
+    monkeypatch.setattr("cryofilter.cli._finalize_inference_run", fake_finalize)
+    monkeypatch.delenv("OMP_NUM_THREADS", raising=False)
+    args = _build_parser().parse_args(
+        [
+            "infer",
+            "--input",
+            str(input_dir),
+            "--output-dir",
+            str(output_dir),
+            "--num-cpus",
+            "32",
+            "--num-gpus",
+            "4",
+        ]
+    )
+    args.num_cpus = 32
+    args.num_gpus = 4
+
+    assert _run_multi_gpu_infer(args, ["cuda:0", "cuda:1", "cuda:2", "cuda:3"]) == 0
+
+    assert os.environ["OMP_NUM_THREADS"] == "8"
+    assert [payload["num_cpus"] for payload in worker_payloads] == [8, 8, 8, 8]
+    assert finalized["summary"]["multi_gpu"]["assignments"][0]["cpu_threads"] == 8
 
 
 def test_default_output_dir_is_derived_from_input_path(tmp_path) -> None:

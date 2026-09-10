@@ -6,6 +6,7 @@ import csv
 import json
 import os
 import shlex
+import signal
 import subprocess
 import sys
 import time
@@ -157,6 +158,64 @@ def write_particle_star_from_manifest(
     }
 
 
+def _stop_local_process(process: subprocess.Popen) -> None:
+    """Reap a local command and stop its worker processes on timeout/cancel."""
+    if os.name == "posix":
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+    elif process.poll() is None:
+        process.terminate()
+    try:
+        process.wait(timeout=5.0)
+    except subprocess.TimeoutExpired:
+        process.kill()
+    finally:
+        # The parent may exit before a spawned CPU/GPU worker does.
+        if os.name == "posix":
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        process.wait()
+
+
+def _run_polled_command(command: list[str], *, env: dict[str, str], timeout: float | None,
+                        poll_callback: Callable[[], None] | None, poll_interval: float,
+                        cancel_event: Any = None) -> None:
+    if cancel_event is not None and cancel_event.is_set():
+        raise RuntimeError("Live typing canceled")
+    process = subprocess.Popen(command, env=env, start_new_session=(os.name == "posix"))
+    deadline = None if timeout is None else time.monotonic() + float(timeout)
+    last_poll = 0.0
+
+    def refresh() -> None:
+        if poll_callback is not None:
+            try:
+                poll_callback()
+            except Exception as exc:
+                print(f"Warning: live update skipped: {type(exc).__name__}: {exc}", flush=True)
+
+    try:
+        while process.poll() is None:
+            now = time.monotonic()
+            if cancel_event is not None and cancel_event.is_set():
+                raise RuntimeError("Live typing canceled")
+            if deadline is not None and now >= deadline:
+                raise subprocess.TimeoutExpired(command, timeout)
+            if now - last_poll >= max(0.5, float(poll_interval)):
+                refresh()
+                last_poll = now
+            time.sleep(0.2)
+        if process.returncode != 0:
+            raise subprocess.CalledProcessError(process.returncode, command)
+    except BaseException:
+        _stop_local_process(process)
+        raise
+    refresh()
+
+
 def run_local_inference(
     *,
     input_dir: str | Path,
@@ -197,6 +256,12 @@ def run_local_inference(
         command.extend(["--render-particle-overlays", "--no-particle-overlay-contact-sheet"])
     else:
         command.append("--no-render-particle-overlays")
+    command.extend(
+        [
+            "--live-summary-file",
+            str(Path(output_dir).expanduser().resolve() / ".cryofilter_worker_00_summary.json"),
+        ]
+    )
     if checkpoint is not None:
         command.extend(["--checkpoint", str(Path(checkpoint).expanduser())])
     if num_cpus is not None:
@@ -211,42 +276,7 @@ def run_local_inference(
     env = os.environ.copy()
     if env_overrides:
         env.update({str(key): str(value) for key, value in env_overrides.items()})
-    if poll_callback is None:
-        completed = subprocess.run(command, timeout=timeout, env=env)
-        if completed.returncode != 0:
-            raise subprocess.CalledProcessError(completed.returncode, command)
-        return command
-
-    process = subprocess.Popen(command, env=env)
-    deadline = None if timeout is None else time.monotonic() + float(timeout)
-    last_poll = 0.0
-    try:
-        while True:
-            returncode = process.poll()
-            now = time.monotonic()
-            if now - last_poll >= max(0.5, float(poll_interval)):
-                try:
-                    poll_callback()
-                except Exception as exc:
-                    print(f"Warning: live typing update skipped: {type(exc).__name__}: {exc}", flush=True)
-                last_poll = now
-            if returncode is not None:
-                break
-            if deadline is not None and now >= deadline:
-                process.kill()
-                process.wait()
-                raise subprocess.TimeoutExpired(command, timeout)
-            time.sleep(0.5)
-    except BaseException:
-        if process.poll() is None:
-            process.terminate()
-        raise
-    if process.returncode != 0:
-        raise subprocess.CalledProcessError(process.returncode, command)
-    try:
-        poll_callback()
-    except Exception as exc:
-        print(f"Warning: final live typing update skipped: {type(exc).__name__}: {exc}", flush=True)
+    _run_polled_command(command, env=env, timeout=timeout, poll_callback=poll_callback, poll_interval=poll_interval)
     return command
 
 
@@ -332,14 +362,16 @@ def run_local_typing(
     env_overrides: Mapping[str, str] | None = None,
     poll_callback: Callable[[], None] | None = None,
     poll_interval: float = 5.0,
+    workers: int = 1,
+    incremental: bool = False,
+    cancel_event: Any = None,
 ) -> list[str]:
     """Run cryoFILTER contamination typing on inference masks."""
 
     command = [
         sys.executable,
         "-m",
-        "cryofilter.cli",
-        "type",
+        "cryofilter.typing_cli",
         "--manifest",
         str(Path(manifest_path).expanduser().resolve()),
         "--output-dir",
@@ -353,6 +385,9 @@ def run_local_typing(
         command.extend(["--pixel-size-angstrom", str(float(pixel_size_angstrom))])
     if expected_images is not None:
         command.extend(["--expected-images", str(int(expected_images))])
+    command.extend(["--workers", str(int(workers))])
+    if incremental:
+        command.append("--incremental")
     print(
         "Running contamination typing; 4-panel OTF images will refresh as typing outputs are written.",
         flush=True,
@@ -361,42 +396,11 @@ def run_local_typing(
     env = os.environ.copy()
     if env_overrides:
         env.update({str(key): str(value) for key, value in env_overrides.items()})
-    if poll_callback is None:
-        completed = subprocess.run(command, timeout=timeout, env=env)
-        if completed.returncode != 0:
-            raise subprocess.CalledProcessError(completed.returncode, command)
-        return command
-
-    process = subprocess.Popen(command, env=env)
-    deadline = None if timeout is None else time.monotonic() + float(timeout)
-    last_poll = 0.0
-    try:
-        while True:
-            returncode = process.poll()
-            now = time.monotonic()
-            if now - last_poll >= max(0.5, float(poll_interval)):
-                try:
-                    poll_callback()
-                except Exception as exc:
-                    print(f"Warning: live typed OTF refresh skipped: {type(exc).__name__}: {exc}", flush=True)
-                last_poll = now
-            if returncode is not None:
-                break
-            if deadline is not None and now >= deadline:
-                process.kill()
-                process.wait()
-                raise subprocess.TimeoutExpired(command, timeout)
-            time.sleep(0.5)
-    except BaseException:
-        if process.poll() is None:
-            process.terminate()
-        raise
-    if process.returncode != 0:
-        raise subprocess.CalledProcessError(process.returncode, command)
-    try:
-        poll_callback()
-    except Exception as exc:
-        print(f"Warning: final live typed OTF refresh skipped: {type(exc).__name__}: {exc}", flush=True)
+    # Parallelism is across images, not nested BLAS pools within each worker.
+    for name in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+        env[name] = "1"
+    _run_polled_command(command, env=env, timeout=timeout, poll_callback=poll_callback,
+                        poll_interval=poll_interval, cancel_event=cancel_event)
     return command
 
 

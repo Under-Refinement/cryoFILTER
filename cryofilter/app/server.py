@@ -890,6 +890,11 @@ def _build_cryosparc_predict_spec(payload: dict[str, Any], *, work_dir: Path) ->
     _add_option(argv, "--max-transfer-gb", payload.get("max_transfer_gb"))
     _add_option(argv, "--typing-summary", payload.get("typing_summary"))
     run_typing = _as_bool(payload.get("run_typing"), default=True)
+    live_typing = _optional_str(payload.get("live_typing")) or "background"
+    if live_typing not in {"background", "final-only"}:
+        raise ValueError("Live typing must be background or final-only")
+    _add_option(argv, "--live-typing", live_typing)
+    _add_option(argv, "--typing-workers", payload.get("typing_workers"))
     if run_typing and not _optional_str(payload.get("typing_summary")):
         argv.append("--run-typing")
     elif not run_typing:
@@ -934,6 +939,8 @@ def _build_cryosparc_predict_spec(payload: dict[str, Any], *, work_dir: Path) ->
             "local_run_root": run_root,
             "local_run_dir": run_dir,
             "run_typing": run_typing,
+            "live_typing": live_typing,
+            "typing_workers": payload.get("typing_workers"),
             "num_cpus": payload.get("num_cpus"),
             "num_gpus": payload.get("num_gpus"),
             "export_masks": export_masks,
@@ -1574,6 +1581,7 @@ def _typing_live_summary(
         "mode": mode,
         "count": count,
         "n_images": int(len(selected)),
+        "n_images_completed": int(len(rows)),
         "n_images_total": int(n_images_total),
         "total_pixels": total_pixels,
         "contaminated_pixels": contaminated_pixels,
@@ -1653,6 +1661,7 @@ def _inference_live_summary_from_rows(
         "mode": mode,
         "count": count,
         "n_images": int(len(selected)),
+        "n_images_completed": int(len(rows)),
         "n_images_total": int(n_images_total or len(rows)),
         "total_pixels": total_pixels,
         "contaminated_pixels": contaminated_pixels,
@@ -1699,26 +1708,36 @@ def _worker_inference_live_summary(
     )
 
 
-def _build_live_summary(
+def _live_progress_payload(summary: dict[str, Any]) -> dict[str, Any]:
+    keys = (
+        "source",
+        "source_path",
+        "source_paths",
+        "worker_count",
+        "mode",
+        "count",
+        "n_images",
+        "n_images_completed",
+        "n_images_total",
+    )
+    return {key: summary[key] for key in keys if key in summary}
+
+
+def _build_inference_live_summary(
     roots: Sequence[Path],
     *,
     mode: str,
     count: int,
-) -> dict[str, Any]:
-    n_images_total = _transfer_manifest_micrograph_count(roots)
-    for summary_path in _candidate_typing_summary_files(roots):
-        try:
-            summary = _typing_live_summary(summary_path, mode=mode, count=count)
-        except Exception:
-            continue
-        if summary is not None:
-            return summary
+    n_images_total: int | None,
+) -> dict[str, Any] | None:
     for summary_path in _candidate_inference_summary_files(roots):
         try:
             summary = _inference_live_summary(summary_path, mode=mode, count=count)
         except Exception:
             continue
         if summary is not None:
+            if n_images_total is not None:
+                summary["n_images_total"] = max(int(summary.get("n_images_total") or 0), int(n_images_total))
             return summary
     worker_summary_paths = _candidate_worker_inference_summary_files(roots)
     if worker_summary_paths:
@@ -1730,6 +1749,35 @@ def _build_live_summary(
         )
         if summary is not None:
             return summary
+    return None
+
+
+def _build_live_summary(
+    roots: Sequence[Path],
+    *,
+    mode: str,
+    count: int,
+) -> dict[str, Any]:
+    n_images_total = _transfer_manifest_micrograph_count(roots)
+    inference_summary = _build_inference_live_summary(
+        roots,
+        mode=mode,
+        count=count,
+        n_images_total=n_images_total,
+    )
+    for summary_path in _candidate_typing_summary_files(roots):
+        try:
+            summary = _typing_live_summary(summary_path, mode=mode, count=count)
+        except Exception:
+            continue
+        if summary is not None:
+            if n_images_total is not None:
+                summary["n_images_total"] = max(int(summary.get("n_images_total") or 0), int(n_images_total))
+            if inference_summary is not None:
+                summary["inference_progress"] = _live_progress_payload(inference_summary)
+            return summary
+    if inference_summary is not None:
+        return inference_summary
     return _empty_live_summary("Waiting for inference or typing summary data.")
 
 
@@ -2026,17 +2074,20 @@ class AppState:
         for root_index, root in enumerate(roots):
             if not root.exists():
                 continue
-            paths = [
-                path
-                for path in root.rglob("*")
-                if path.is_file()
-                and path.suffix.lower() in ARTIFACT_SUFFIXES
-                and _is_visible_artifact_path(root, path)
-            ]
+            paths = []
+            for directory, subdirs, filenames in os.walk(root):
+                # Hidden inference maps and feature caches can contain thousands
+                # of files, none of which are displayable monitor artifacts.
+                subdirs[:] = [name for name in subdirs if not name.startswith(".")]
+                paths.extend(
+                    Path(directory) / name for name in filenames
+                    if not name.startswith(".") and Path(name).suffix.lower() in ARTIFACT_SUFFIXES
+                )
             for path in sorted(paths, key=lambda item: _artifact_sort_key(root, item)):
                 if not path.is_file() or path.suffix.lower() not in ARTIFACT_SUFFIXES:
                     continue
                 rel = path.relative_to(root).as_posix()
+                file_stat = path.stat()
                 artifacts.append(
                     {
                         "root_index": root_index,
@@ -2044,8 +2095,8 @@ class AppState:
                         "relative_path": rel,
                         "name": path.name,
                         "suffix": path.suffix.lower(),
-                        "size": path.stat().st_size,
-                        "mtime": int(path.stat().st_mtime),
+                        "size": file_stat.st_size,
+                        "mtime": file_stat.st_mtime,
                         "url": f"/api/jobs/{job_id}/artifact/{root_index}/{quote(rel)}",
                     }
                 )

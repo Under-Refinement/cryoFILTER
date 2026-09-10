@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
+import hashlib
 import json
+import multiprocessing as mp
 import os
+import time
 from pathlib import Path
 from typing import Iterable, Optional, Sequence
 
@@ -13,7 +17,12 @@ import numpy as np
 import pandas as pd
 from scipy import ndimage as ndi
 
-from utils.contamination_typing import _is_edge_artifact_component, assign_frequency_component_type
+from utils.contamination_typing import (
+    _EDGE_MIN_COMPONENT_SHARE,
+    _LARGE_COMPONENT_MIN_AREA,
+    _is_edge_artifact_component,
+    assign_frequency_component_type,
+)
 from utils.contamination_subtypes import TYPE_ID_SEQUENCE, TYPE_ID_TO_DISPLAY, TYPE_ID_TO_KEY
 from utils.image_utils import compute_frequency_band_psd_channels, normalize_image
 
@@ -59,6 +68,8 @@ COMPONENT_SUMMARY_COLUMNS = (
     "type",
     "type_confidence",
 )
+# Bump when feature extraction or the dataset-relative assignment rules change.
+TYPING_CACHE_VERSION = 1
 
 
 def _add_type_arguments(ap: argparse.ArgumentParser) -> None:
@@ -102,6 +113,9 @@ def _add_type_arguments(ap: argparse.ArgumentParser) -> None:
     ap.add_argument("--crop-pad-px", type=int, default=16, help="Padding around each component crop before PSD extraction.")
     ap.add_argument("--min-crop-size-px", type=int, default=128, help="Minimum PSD crop size.")
     ap.add_argument("--max-psd-crop-size-px", type=int, default=768, help="Maximum PSD crop size before downsampling.")
+    ap.add_argument("--workers", type=int, default=1, help="Parallel per-image CPU workers (default: 1).")
+    ap.add_argument("--incremental", action="store_true", help="Reuse cached per-image features when inputs and settings are unchanged.")
+    ap.add_argument("--summary-interval", type=float, default=20.0, help="Minimum seconds between live summary/mask updates; always publish the final result.")
 
 
 def build_parser(*, prog: str = "predict_contamination_types.py") -> argparse.ArgumentParser:
@@ -396,16 +410,16 @@ def _assign_types(component_df: pd.DataFrame) -> pd.DataFrame:
 
 def _typed_mask_for_image(mask: np.ndarray, image_rows: pd.DataFrame) -> np.ndarray:
     labels, nlab = ndi.label(mask.astype(bool), structure=np.ones((3, 3), dtype=bool))
-    typed = np.zeros(mask.shape, dtype=np.uint8)
+    lookup = np.zeros(nlab + 1, dtype=np.uint8)
     if nlab <= 0:
-        return typed
+        return lookup[labels]
     type_by_comp = {
         int(row["component_id"]): PUBLIC_TYPE_TO_ID[str(row["type"])]
         for _, row in image_rows.iterrows()
     }
     for comp_id, type_id in type_by_comp.items():
-        typed[labels == int(comp_id)] = np.uint8(type_id)
-    return typed
+        lookup[int(comp_id)] = np.uint8(type_id)
+    return lookup[labels]
 
 
 def _image_summary_rows(component_df: pd.DataFrame, manifest_rows: Iterable[pd.Series]) -> list[dict[str, object]]:
@@ -588,177 +602,304 @@ def _write_typed_masks_for_rows(
     return written
 
 
+def _extract_image_features(task: tuple) -> dict[str, object]:
+    """Compute expensive image-local features; dataset-relative labels come later."""
+    row, manifest_dir, args, frequency_bands = task
+    component_rows: list[dict[str, object]] = []
+    micro_col = _first_existing_column(row, MICROGRAPH_PATH_COLUMNS)
+    mask_col = _first_existing_column(row, MASK_PATH_COLUMNS)
+    if micro_col is None or mask_col is None:
+        raise ValueError(
+            "Each manifest row must provide a micrograph path column from "
+            f"{MICROGRAPH_PATH_COLUMNS} and a mask path column from {MASK_PATH_COLUMNS}."
+        )
+
+    dataset_id = str(row["dataset_id"])
+    stem = str(row["stem"])
+    image_id = f"{dataset_id}__{stem}"
+    micro_path = _resolve_path(manifest_dir, row[micro_col])
+    mask_path = _resolve_path(manifest_dir, row[mask_col])
+
+    image, header_pixel_size = _load_micrograph(micro_path)
+    mask = _load_mask(mask_path)
+    if tuple(image.shape) != tuple(mask.shape):
+        raise ValueError(
+            f"Micrograph and mask shapes must match for {image_id}: "
+            f"image={tuple(image.shape)} mask={tuple(mask.shape)}"
+        )
+
+    pixel_size_angstrom = _resolve_pixel_size(
+        row,
+        header_pixel_size=header_pixel_size,
+        override_pixel_size=args.pixel_size_angstrom,
+    )
+    image_norm = None
+
+    labels, nlab = ndi.label(mask.astype(bool), structure=np.ones((3, 3), dtype=bool))
+    objects = ndi.find_objects(labels)
+    total_contam_pixels = int(mask.sum())
+    h, w = mask.shape
+    edge_px = max(1, int(0.10 * min(h, w)))
+
+    for comp_id, sl in enumerate(objects, start=1):
+        if sl is None:
+            continue
+        local_mask = np.asarray(labels[sl] == comp_id, dtype=bool)
+        area_px = int(local_mask.sum())
+        bbox_y0 = int(sl[0].start)
+        bbox_y1 = int(sl[0].stop - 1)
+        bbox_x0 = int(sl[1].start)
+        bbox_x1 = int(sl[1].stop - 1)
+        bbox_h = int(sl[0].stop - sl[0].start)
+        bbox_w = int(sl[1].stop - sl[1].start)
+        touches_border = int(sl[0].start == 0 or sl[1].start == 0 or sl[0].stop == h or sl[1].stop == w)
+        # Only a component with sufficient area/share can pass the edge rule.
+        # Avoid allocating a full-image boolean array for every tiny component.
+        edge_artifact = 0
+        if area_px >= _LARGE_COMPONENT_MIN_AREA and area_px >= _EDGE_MIN_COMPONENT_SHARE * total_contam_pixels:
+            edge_artifact = int(_is_edge_artifact_component(
+                labels == comp_id, total_contam_pixels=total_contam_pixels, edge_px=edge_px,
+            ))
+        eroded = ndi.binary_erosion(local_mask, structure=np.ones((3, 3), dtype=bool), border_value=0)
+        perimeter_px = float(np.count_nonzero(local_mask & (~eroded)))
+        compactness = float(4.0 * np.pi * area_px / (perimeter_px * perimeter_px + 1e-6))
+        bbox_fill = float(area_px / max(1, bbox_h * bbox_w))
+        aspect_ratio = float(max(bbox_h, bbox_w) / max(1, min(bbox_h, bbox_w)))
+
+        small_component_auto_ethane = bool(area_px < int(args.min_component_area_px))
+        band_scores = [float("nan")] * 4
+        if not small_component_auto_ethane:
+            if image_norm is None:
+                image_norm = normalize_image(image, method=args.normalization_method).astype(np.float32, copy=False)
+            band_scores = _component_band_scores(
+                image_norm=image_norm,
+                bbox=(bbox_y0, bbox_y1, bbox_x0, bbox_x1),
+                pixel_size_angstrom=pixel_size_angstrom,
+                frequency_bands=frequency_bands,
+                crop_pad_px=int(args.crop_pad_px),
+                min_crop_size_px=int(args.min_crop_size_px),
+                max_psd_crop_size_px=int(args.max_psd_crop_size_px),
+            )
+
+        component_rows.append(
+            {
+                "image_id": image_id,
+                "dataset_id": dataset_id,
+                "stem": stem,
+                "component_id": int(comp_id),
+                "area_px": int(area_px),
+                "pixel_size_angstrom": float(pixel_size_angstrom),
+                "bbox_y0": bbox_y0,
+                "bbox_y1": bbox_y1,
+                "bbox_x0": bbox_x0,
+                "bbox_x1": bbox_x1,
+                "bbox_h_px": bbox_h,
+                "bbox_w_px": bbox_w,
+                "touches_border": touches_border,
+                "edge_artifact": edge_artifact,
+                "compactness": compactness,
+                "bbox_fill_frac": bbox_fill,
+                "aspect_ratio": aspect_ratio,
+                "band_1_score": float(band_scores[0]),
+                "band_2_score": float(band_scores[1]),
+                "band_3_score": float(band_scores[2]),
+                "band_4_score": float(band_scores[3]),
+                "small_component_auto_ethane": bool(small_component_auto_ethane),
+                "total_pixels": int(h * w),
+                "contaminated_pixels": int(total_contam_pixels),
+            }
+        )
+    return {
+        "components": component_rows,
+        "total_pixels": int(h * w),
+        "contaminated_pixels": total_contam_pixels,
+    }
+
+
+def _digest(payload: object) -> str:
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()
+
+
+def _file_stamp(path: Path) -> list[object]:
+    stat = path.stat()
+    return [str(path.resolve()), stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns]
+
+
+def _read_cache(path: Path) -> dict:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        return payload if isinstance(payload, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _feature_signature(row: pd.Series, manifest_dir: Path, args: argparse.Namespace, bands: tuple) -> str:
+    paths = []
+    for columns in (MICROGRAPH_PATH_COLUMNS, MASK_PATH_COLUMNS):
+        col = _first_existing_column(row, columns)
+        if col is None:
+            raise ValueError(f"Manifest row must provide a path from {columns}")
+        paths.append(_file_stamp(_resolve_path(manifest_dir, row[col])))
+    return _digest({
+        "version": TYPING_CACHE_VERSION,
+        "paths": paths,
+        "row": {str(key): str(value) for key, value in row.items()},
+        "bands": bands,
+        "settings": {name: getattr(args, name) for name in (
+            "normalization_method", "pixel_size_angstrom", "min_component_area_px",
+            "crop_pad_px", "min_crop_size_px", "max_psd_crop_size_px",
+        )},
+    })
+
+
+def _typing_worker_init() -> None:
+    # Each process owns one image; nested BLAS pools multiply CPU contention.
+    from threadpoolctl import threadpool_limits
+    global _worker_thread_limit
+    _worker_thread_limit = threadpool_limits(limits=1)
+
+
 def run(args: argparse.Namespace) -> int:
+    workers = int(getattr(args, "workers", 1))
+    interval = float(getattr(args, "summary_interval", 20.0))
+    if workers < 1 or not np.isfinite(interval) or interval < 0:
+        raise ValueError("--workers must be at least 1 and --summary-interval must be finite and nonnegative")
     manifest_path = args.manifest.expanduser().resolve()
     output_dir = args.output_dir.expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     typed_mask_dir = output_dir / "typed_masks"
     typed_mask_dir.mkdir(parents=True, exist_ok=True)
-
+    cache_dir = output_dir / ".feature_cache"
+    incremental = bool(getattr(args, "incremental", False))
+    if incremental:
+        cache_dir.mkdir(parents=True, exist_ok=True)
     bands_json = args.bands_json.expanduser()
     if not bands_json.is_absolute():
         bands_json = (REPO_ROOT / bands_json).resolve()
     frequency_bands = _load_bands(bands_json)
-
     manifest_df = pd.read_csv(manifest_path).reset_index(drop=True)
-    expected_images = (
-        int(args.expected_images)
-        if args.expected_images is not None and int(args.expected_images) > 0
-        else int(len(manifest_df))
-    )
-    if "dataset_id" not in manifest_df.columns or "stem" not in manifest_df.columns:
-        raise ValueError("Manifest must contain dataset_id and stem columns.")
-
+    if manifest_df.empty or "dataset_id" not in manifest_df or "stem" not in manifest_df:
+        raise ValueError("Manifest must contain at least one row with dataset_id and stem columns.")
+    image_ids = manifest_df["dataset_id"].astype(str) + "__" + manifest_df["stem"].astype(str)
+    if image_ids.duplicated().any():
+        raise ValueError("Manifest contains duplicate dataset_id/stem image IDs")
+    expected_images = max(len(manifest_df), int(args.expected_images or 0))
     manifest_dir = manifest_path.parent
-    component_rows: list[dict[str, object]] = []
-    manifest_rows: list[pd.Series] = []
-
-    for _, row in manifest_df.iterrows():
-        micro_col = _first_existing_column(row, MICROGRAPH_PATH_COLUMNS)
-        mask_col = _first_existing_column(row, MASK_PATH_COLUMNS)
-        if micro_col is None or mask_col is None:
-            raise ValueError(
-                "Each manifest row must provide a micrograph path column from "
-                f"{MICROGRAPH_PATH_COLUMNS} and a mask path column from {MASK_PATH_COLUMNS}."
-            )
-
-        dataset_id = str(row["dataset_id"])
-        stem = str(row["stem"])
-        image_id = f"{dataset_id}__{stem}"
-        micro_path = _resolve_path(manifest_dir, row[micro_col])
-        mask_path = _resolve_path(manifest_dir, row[mask_col])
-
-        image, header_pixel_size = _load_micrograph(micro_path)
-        mask = _load_mask(mask_path)
-        if tuple(image.shape) != tuple(mask.shape):
-            raise ValueError(
-                f"Micrograph and mask shapes must match for {image_id}: "
-                f"image={tuple(image.shape)} mask={tuple(mask.shape)}"
-            )
-
-        pixel_size_angstrom = _resolve_pixel_size(
-            row,
-            header_pixel_size=header_pixel_size,
-            override_pixel_size=args.pixel_size_angstrom,
-        )
-        image_norm = normalize_image(image, method=args.normalization_method).astype(np.float32, copy=False)
-
-        labels, nlab = ndi.label(mask.astype(bool), structure=np.ones((3, 3), dtype=bool))
-        objects = ndi.find_objects(labels)
-        total_contam_pixels = int(mask.sum())
-        h, w = mask.shape
-        edge_px = max(1, int(0.10 * min(h, w)))
-
-        for comp_id, sl in enumerate(objects, start=1):
-            if sl is None:
+    source_rows = [row for _, row in manifest_df.iterrows()]
+    signatures = [_feature_signature(row, manifest_dir, args, frequency_bands) for row in source_rows]
+    features = {}
+    pending = []
+    for index, image_id in enumerate(image_ids):
+        cached = _read_cache(cache_dir / f"{_digest(image_id)}.json") if incremental else {}
+        if cached.get("signature") == signatures[index] and isinstance(cached.get("features"), dict):
+            feature = cached["features"]
+            if all(key in feature for key in ("components", "total_pixels", "contaminated_pixels")):
+                features[index] = feature
                 continue
-            local_mask = np.asarray(labels[sl] == comp_id, dtype=bool)
-            area_px = int(local_mask.sum())
-            bbox_y0 = int(sl[0].start)
-            bbox_y1 = int(sl[0].stop - 1)
-            bbox_x0 = int(sl[1].start)
-            bbox_x1 = int(sl[1].stop - 1)
-            bbox_h = int(sl[0].stop - sl[0].start)
-            bbox_w = int(sl[1].stop - sl[1].start)
-            touches_border = int(sl[0].start == 0 or sl[1].start == 0 or sl[0].stop == h or sl[1].stop == w)
-            component_mask = np.asarray(labels == comp_id, dtype=bool)
-            edge_artifact = int(
-                _is_edge_artifact_component(
-                    component_mask,
-                    total_contam_pixels=total_contam_pixels,
-                    edge_px=edge_px,
-                )
-            )
-            eroded = ndi.binary_erosion(local_mask, structure=np.ones((3, 3), dtype=bool), border_value=0)
-            perimeter_px = float(np.count_nonzero(local_mask & (~eroded)))
-            compactness = float(4.0 * np.pi * area_px / (perimeter_px * perimeter_px + 1e-6))
-            bbox_fill = float(area_px / max(1, bbox_h * bbox_w))
-            aspect_ratio = float(max(bbox_h, bbox_w) / max(1, min(bbox_h, bbox_w)))
+        pending.append(index)
+    print(f"Typing features: {len(features)} cached, {len(pending)} new/changed; {min(workers, len(pending))} worker(s).", flush=True)
+    state_path = cache_dir / "published.json"
+    published = _read_cache(state_path) if incremental else {}
+    mask_states = published.get("masks", {})
+    run_signature = _digest([signatures, expected_images, str(manifest_path), str(bands_json.resolve())])
+    summary_files = [output_dir / name for name in (
+        "summary.json", "component_type_assignments.csv", "image_contamination_summary.csv", "dataset_contamination_summary.csv",
+    )]
+    if not pending and published.get("run_signature") == run_signature:
+        intact = (all(path.exists() for path in summary_files)
+                  and published.get("summary_stamps") == [_file_stamp(path) for path in summary_files])
+        for image_id in image_ids:
+            path = typed_mask_dir / f"{image_id}_typed_mask.npy"
+            intact = intact and path.exists() and mask_states.get(image_id, {}).get("stamp") == _file_stamp(path)
+        if intact:
+            print(f"Typing already current: {len(source_rows)}/{expected_images} images; reused published outputs.", flush=True)
+            return 0
 
-            small_component_auto_ethane = bool(area_px < int(args.min_component_area_px))
-            band_scores = [float("nan")] * 4
-            if not small_component_auto_ethane:
-                band_scores = _component_band_scores(
-                    image_norm=image_norm,
-                    bbox=(bbox_y0, bbox_y1, bbox_x0, bbox_x1),
-                    pixel_size_angstrom=pixel_size_angstrom,
-                    frequency_bands=frequency_bands,
-                    crop_pad_px=int(args.crop_pad_px),
-                    min_crop_size_px=int(args.min_crop_size_px),
-                    max_psd_crop_size_px=int(args.max_psd_crop_size_px),
-                )
-
-            component_rows.append(
-                {
-                    "image_id": image_id,
-                    "dataset_id": dataset_id,
-                    "stem": stem,
-                    "component_id": int(comp_id),
-                    "area_px": int(area_px),
-                    "pixel_size_angstrom": float(pixel_size_angstrom),
-                    "bbox_y0": bbox_y0,
-                    "bbox_y1": bbox_y1,
-                    "bbox_x0": bbox_x0,
-                    "bbox_x1": bbox_x1,
-                    "bbox_h_px": bbox_h,
-                    "bbox_w_px": bbox_w,
-                    "touches_border": touches_border,
-                    "edge_artifact": edge_artifact,
-                    "compactness": compactness,
-                    "bbox_fill_frac": bbox_fill,
-                    "aspect_ratio": aspect_ratio,
-                    "band_1_score": float(band_scores[0]),
-                    "band_2_score": float(band_scores[1]),
-                    "band_3_score": float(band_scores[2]),
-                    "band_4_score": float(band_scores[3]),
-                    "small_component_auto_ethane": bool(small_component_auto_ethane),
-                    "total_pixels": int(h * w),
-                    "contaminated_pixels": int(total_contam_pixels),
-                }
-            )
-        row_with_geometry = row.copy()
-        row_with_geometry["_total_pixels"] = int(h * w)
-        row_with_geometry["_contaminated_pixels"] = int(total_contam_pixels)
-        manifest_rows.append(row_with_geometry)
-        partial_component_df = _component_summary_df(component_rows)
-        _write_typed_masks_for_rows(
-            typed_mask_dir=typed_mask_dir,
-            manifest_dir=manifest_dir,
-            component_df=partial_component_df,
-            manifest_rows=manifest_rows,
+    def publish(*, final: bool) -> None:
+        # Sorting by manifest order makes parallel and serial dataset statistics identical.
+        indices = sorted(features)
+        rows = []
+        components = []
+        for index in indices:
+            feature = features[index]
+            row = source_rows[index].copy()
+            row["_total_pixels"] = feature["total_pixels"]
+            row["_contaminated_pixels"] = feature["contaminated_pixels"]
+            rows.append(row)
+            components.extend(feature["components"])
+        component_df = _component_summary_df(components)
+        groups = {key: sub for key, sub in component_df.groupby("image_id", sort=False)}
+        for index, row in zip(indices, rows):
+            image_id = str(image_ids.iloc[index])
+            sub = groups.get(image_id, component_df.iloc[:0])
+            signature = _digest([signatures[index], sub[["component_id", "type"]].values.tolist()])
+            path = typed_mask_dir / f"{image_id}_typed_mask.npy"
+            previous = mask_states.get(image_id, {})
+            if (previous.get("signature") != signature or not path.exists()
+                    or previous.get("stamp") != _file_stamp(path)):
+                mask_col = _first_existing_column(row, MASK_PATH_COLUMNS)
+                mask = _load_mask(_resolve_path(manifest_dir, row[mask_col]))
+                _save_npy_atomic(path, _typed_mask_for_image(mask, sub))
+                mask_states[image_id] = {"signature": signature, "stamp": _file_stamp(path)}
+        _write_csv_atomic(component_df, output_dir / "component_type_assignments.csv")
+        _, _, overall = _write_summary_outputs(
+            output_dir=output_dir, bands_json=bands_json, args=args,
+            component_df=component_df, manifest_rows=rows, expected_images=expected_images,
+            status="complete" if final and len(rows) >= expected_images else "running",
         )
-        _write_summary_outputs(
-            output_dir=output_dir,
-            bands_json=bands_json,
-            args=args,
-            component_df=partial_component_df,
-            manifest_rows=manifest_rows,
-            expected_images=expected_images,
-            status="running",
-        )
-        print(f"Typed {len(manifest_rows)}/{expected_images} image(s); live summary updated.", flush=True)
+        if incremental:
+            _write_json_atomic(state_path, {
+                "run_signature": run_signature if final else None,
+                "masks": mask_states,
+                "summary_stamps": [_file_stamp(path) for path in summary_files],
+            })
+        print(f"Typed {len(rows)}/{expected_images} image(s); live summary updated.", flush=True)
+        if final:
+            _print_overall_summary(overall)
 
-    component_df = _component_summary_df(component_rows)
-    component_csv = output_dir / "component_type_assignments.csv"
-    _write_csv_atomic(component_df, component_csv)
-    _write_typed_masks_for_rows(
-        typed_mask_dir=typed_mask_dir,
-        manifest_dir=manifest_dir,
-        component_df=component_df,
-        manifest_rows=[row for _, row in manifest_df.iterrows()],
-    )
-    image_summary_df, dataset_summary_df, overall_summary = _write_summary_outputs(
-        output_dir=output_dir,
-        bands_json=bands_json,
-        args=args,
-        component_df=component_df,
-        manifest_rows=manifest_rows,
-        expected_images=expected_images,
-        status="complete",
-    )
+    last_publish = time.monotonic()
+    if features and pending:
+        publish(final=False)
+        last_publish = time.monotonic()
 
-    _print_overall_summary(overall_summary)
-    print(f"Wrote component table: {component_csv}")
+    def accept(index: int, feature: dict) -> None:
+        nonlocal last_publish
+        # Refuse to cache a snapshot that changed while its features were computed.
+        if _feature_signature(source_rows[index], manifest_dir, args, frequency_bands) != signatures[index]:
+            raise ValueError(f"Typing inputs changed while reading {image_ids.iloc[index]}; retry when inference finishes")
+        features[index] = feature
+        if incremental:
+            _write_json_atomic(cache_dir / f"{_digest(str(image_ids.iloc[index]))}.json",
+                               {"signature": signatures[index], "features": feature})
+        if len(features) < len(source_rows) and time.monotonic() - last_publish >= interval:
+            publish(final=False)
+            last_publish = time.monotonic()
+
+    tasks = [(source_rows[index], manifest_dir, args, frequency_bands) for index in pending]
+    if workers > 1 and len(tasks) > 1:
+        # Spawn is safe when the CLI was started alongside threaded GPU inference.
+        with ProcessPoolExecutor(max_workers=min(workers, len(tasks)), mp_context=mp.get_context("spawn"),
+                                 initializer=_typing_worker_init) as pool:
+            # Keep at most one in-flight image per worker; futures contain features, never micrographs.
+            iterator = iter(zip(pending, tasks))
+            active = {}
+            for index, task in iterator:
+                active[pool.submit(_extract_image_features, task)] = index
+                if len(active) >= workers:
+                    break
+            while active:
+                done, _ = wait(active, return_when=FIRST_COMPLETED)
+                for future in done:
+                    accept(active.pop(future), future.result())
+                    next_task = next(iterator, None)
+                    if next_task is not None:
+                        index, task = next_task
+                        active[pool.submit(_extract_image_features, task)] = index
+    else:
+        for index, task in zip(pending, tasks):
+            accept(index, _extract_image_features(task))
+    publish(final=True)
+    print(f"Wrote component table: {output_dir / 'component_type_assignments.csv'}")
     print(f"Wrote image summary:  {output_dir / 'image_contamination_summary.csv'}")
     print(f"Wrote dataset summary:{output_dir / 'dataset_contamination_summary.csv'}")
     print(f"Wrote typed masks:    {typed_mask_dir}")
@@ -767,3 +908,7 @@ def run(args: argparse.Namespace) -> int:
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     return run(parse_args(argv))
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

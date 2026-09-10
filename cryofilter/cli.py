@@ -55,6 +55,12 @@ TYPING_MANIFEST_FIELDS = (
     "binary_mask_path",
     "pixel_size_angstrom",
 )
+CPU_THREAD_ENV_NAMES = (
+    "OMP_NUM_THREADS",
+    "MKL_NUM_THREADS",
+    "OPENBLAS_NUM_THREADS",
+    "NUMEXPR_NUM_THREADS",
+)
 
 
 def _repo_root() -> Path:
@@ -198,6 +204,21 @@ def _parse_optional_resource_int(
     return parsed
 
 
+def _set_cpu_thread_env(thread_count: int) -> None:
+    value = str(int(thread_count))
+    os.environ["CRYOFILTER_NUM_CPUS"] = value
+    for env_name in CPU_THREAD_ENV_NAMES:
+        os.environ[env_name] = value
+
+
+def _cpu_threads_per_gpu_worker(total_cpus: int | None, worker_count: int) -> int | None:
+    if total_cpus is None:
+        return None
+    if int(worker_count) < 1:
+        raise ValueError("worker_count must be at least 1")
+    return max(1, int(total_cpus) // int(worker_count))
+
+
 def _apply_infer_resource_args(args: argparse.Namespace) -> dict[str, int | None]:
     """Apply friendly CPU/GPU count aliases before resolving public GPU shards."""
 
@@ -207,10 +228,8 @@ def _apply_infer_resource_args(args: argparse.Namespace) -> dict[str, int | None
         minimum=1,
     )
     if num_cpus is not None:
-        value = str(num_cpus)
-        os.environ["CRYOFILTER_NUM_CPUS"] = value
-        for env_name in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
-            os.environ[env_name] = value
+        args.num_cpus = num_cpus
+        _set_cpu_thread_env(num_cpus)
 
     num_gpus = _parse_optional_resource_int(
         getattr(args, "num_gpus", None) or os.environ.get("CRYOFILTER_NUM_GPUS"),
@@ -218,6 +237,7 @@ def _apply_infer_resource_args(args: argparse.Namespace) -> dict[str, int | None
         minimum=0,
     )
     if num_gpus is not None:
+        args.num_gpus = num_gpus
         os.environ["CRYOFILTER_NUM_GPUS"] = str(num_gpus)
         if not str(getattr(args, "gpus", "") or "").strip() and num_gpus > 0:
             args.gpus = ",".join(str(index) for index in range(num_gpus))
@@ -1963,7 +1983,12 @@ def _run_multi_gpu_infer(args: argparse.Namespace, devices: Sequence[str]) -> in
     active_devices = list(devices[: len(mrc_paths)])
     if len(active_devices) <= 1:
         args.device = active_devices[0]
-        return int(_run_infer(args))
+        live_summary_path = (
+            Path(args.live_summary_file).expanduser().resolve()
+            if getattr(args, "live_summary_file", None)
+            else None
+        )
+        return int(_run_infer(args, live_summary_path=live_summary_path))
 
     stems: dict[str, Path] = {}
     for path in mrc_paths:
@@ -1989,6 +2014,19 @@ def _run_multi_gpu_infer(args: argparse.Namespace, devices: Sequence[str]) -> in
         "Worker progress counters are per-GPU shard; the app aggregates completed micrographs across workers.",
         flush=True,
     )
+    total_cpus = _parse_optional_resource_int(
+        getattr(args, "num_cpus", None) or os.environ.get("CRYOFILTER_NUM_CPUS"),
+        name="--num-cpus",
+        minimum=1,
+    )
+    per_worker_cpus = _cpu_threads_per_gpu_worker(total_cpus, len(active_devices))
+    if per_worker_cpus is not None:
+        _set_cpu_thread_env(per_worker_cpus)
+        print(
+            f"Using {per_worker_cpus} CPU thread(s) per GPU worker "
+            f"({total_cpus} total requested across {len(active_devices)} workers).",
+            flush=True,
+        )
 
     context = mp.get_context("spawn")
     processes: list[mp.Process] = []
@@ -1998,6 +2036,8 @@ def _run_multi_gpu_infer(args: argparse.Namespace, devices: Sequence[str]) -> in
     ):
         worker_payload = dict(vars(args))
         worker_payload["device"] = device
+        if per_worker_cpus is not None:
+            worker_payload["num_cpus"] = per_worker_cpus
         worker_payload["force_disk_mask_outputs"] = bool(args.particle_file)
         process = context.Process(
             target=_multi_gpu_worker,
@@ -2013,6 +2053,7 @@ def _run_multi_gpu_infer(args: argparse.Namespace, devices: Sequence[str]) -> in
                 "micrograph_count": len(shard),
                 "micrographs": [str(path) for path in shard],
                 "worker_summary": str(worker_summary_path),
+                "cpu_threads": per_worker_cpus,
             }
         )
 
@@ -2714,6 +2755,11 @@ def _build_parser() -> argparse.ArgumentParser:
             "Useful when restarting a crashed directory run without rebuilding staging directories."
         ),
     )
+    infer.add_argument(
+        "--live-summary-file",
+        default=None,
+        help=argparse.SUPPRESS,
+    )
 
     add_train_subparser(subparsers)
 
@@ -2823,7 +2869,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         devices = _resolve_inference_devices(args.gpus)
         if devices:
             return _run_multi_gpu_infer(args, devices)
-        return _run_infer(args)
+        live_summary_path = (
+            Path(args.live_summary_file).expanduser().resolve()
+            if getattr(args, "live_summary_file", None)
+            else None
+        )
+        return _run_infer(args, live_summary_path=live_summary_path)
     if args.command == "train":
         return run_train(args)
     if args.command in {"filter-particles", "filter"}:

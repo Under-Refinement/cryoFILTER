@@ -183,6 +183,17 @@ def test_live_summary_ui_layout_and_palette() -> None:
     assert "px typed" not in script
 
 
+def test_live_summary_ui_uses_completed_rows_for_progress() -> None:
+    script = (Path(__file__).resolve().parents[1] / "cryofilter" / "app" / "static" / "app.js").read_text(
+        encoding="utf-8"
+    )
+
+    assert "source.n_images_completed ?? source.n_images" in script
+    assert "completed: Number(liveSummary.n_images_total)" not in script
+    assert 'range = active || completed < total ? "completed so far" : "whole data set"' in script
+    assert "liveSummaryProgress(liveSummary, { preferInference: true })" in script
+
+
 def test_render_selected_has_no_duplicate_const_declarations() -> None:
     script = (Path(__file__).resolve().parents[1] / "cryofilter" / "app" / "static" / "app.js").read_text(
         encoding="utf-8"
@@ -296,6 +307,8 @@ def test_cryosparc_predict_job_spec_uses_typing_default(tmp_path: Path) -> None:
             "device": "cuda",
             "inference_profile": "balanced",
             "num_cpus": "8",
+            "typing_workers": "3",
+            "live_typing": "final-only",
             "num_gpus": "1",
         },
         work_dir=tmp_path,
@@ -329,6 +342,10 @@ def test_cryosparc_predict_job_spec_uses_typing_default(tmp_path: Path) -> None:
     assert spec.metadata["run_id"] == run_id
     assert spec.metadata["local_run_dir"] == tmp_path / "runs" / run_id
     assert spec.artifact_roots == [tmp_path / "runs" / run_id]
+
+    parsed = _build_parser().parse_args(argv[3:])
+    assert parsed.live_typing == "final-only"
+    assert parsed.typing_workers == 3
 
 
 def test_cryosparc_predict_job_spec_forwards_output_options(tmp_path: Path) -> None:
@@ -927,6 +944,7 @@ def test_app_state_live_summary_aggregates_typing_range(tmp_path: Path) -> None:
     assert summary["available"] is True
     assert summary["source"] == "typing"
     assert summary["n_images"] == 2
+    assert summary["n_images_completed"] == 3
     assert summary["n_images_total"] == 10
     assert summary["total_pixels"] == 300
     assert summary["contaminated_pixels"] == 80
@@ -995,10 +1013,70 @@ def test_app_state_live_summary_aggregates_multi_gpu_worker_summaries(tmp_path: 
     assert summary["source"] == "multi_gpu_workers"
     assert summary["worker_count"] == 2
     assert summary["n_images"] == 3
+    assert summary["n_images_completed"] == 4
     assert summary["n_images_total"] == 60
     assert summary["total_pixels"] == 500
     assert summary["contaminated_pixels"] == 90
     assert summary["clean_pixels"] == 410
+
+
+def test_app_state_live_summary_keeps_inference_progress_when_typing_exists(tmp_path: Path) -> None:
+    state = AppState(tmp_path)
+    job_id = "combined123"
+    run_dir = tmp_path / "runs" / "one"
+    inference_dir = run_dir / "inference"
+    typing_dir = run_dir / "typing"
+    inference_dir.mkdir(parents=True)
+    typing_dir.mkdir(parents=True)
+    (run_dir / "transfer_manifest.json").write_text(
+        json.dumps({"micrographs": [{} for _ in range(60)]}),
+        encoding="utf-8",
+    )
+    (inference_dir / ".cryofilter_worker_00_summary.json").write_text(
+        json.dumps(
+            {
+                "inputs": [
+                    {
+                        "input_mrc": f"mic_{index}.mrc",
+                        "output_image_shape": [10, 10],
+                        "mask_postprocessing": {"final_mask_pixels": 10},
+                    }
+                    for index in range(5)
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    image_csv = typing_dir / "image_contamination_summary.csv"
+    image_csv.write_text(
+        "\n".join(
+            [
+                "image_id,dataset_id,stem,total_pixels,contaminated_pixels,carbon_area_px,crystalline_area_px,aggregate_area_px,ethane_area_px",
+                "d__a,d,a,100,20,20,0,0,0",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (typing_dir / "summary.json").write_text(
+        json.dumps({"image_contamination_summary_csv": str(image_csv), "n_images_expected": 60}),
+        encoding="utf-8",
+    )
+    job_dir = state.jobs_dir / job_id
+    job_dir.mkdir(parents=True)
+    (job_dir / "meta.json").write_text(
+        json.dumps({"id": job_id, "kind": "cryosparc_predict", "artifact_roots": [str(run_dir)]}),
+        encoding="utf-8",
+    )
+
+    summary = state.live_summary(job_id)
+
+    assert summary["source"] == "typing"
+    assert summary["n_images_completed"] == 1
+    assert summary["n_images_total"] == 60
+    assert summary["inference_progress"]["source"] == "multi_gpu_workers"
+    assert summary["inference_progress"]["n_images_completed"] == 5
+    assert summary["inference_progress"]["n_images_total"] == 60
 
 
 def test_runtime_status_reports_display_metadata(monkeypatch) -> None:

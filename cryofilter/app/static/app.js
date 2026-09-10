@@ -1676,6 +1676,11 @@ function formatThroughputSeconds(seconds) {
   return numeric < 10 ? `${numeric.toFixed(2)}s` : `${numeric.toFixed(1)}s`;
 }
 
+function positiveNumber(value) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) && numeric > 0 ? numeric : null;
+}
+
 function optionValue(job, option) {
   for (const step of job?.steps || []) {
     const argv = step.argv || [];
@@ -1755,25 +1760,46 @@ function bracketMicrographProgress(job, logText) {
   };
 }
 
+function liveSummaryProgress(liveSummary, options = {}) {
+  if (!liveSummary?.available) return null;
+  const source = options.preferInference && liveSummary.inference_progress
+    ? liveSummary.inference_progress
+    : liveSummary;
+  const completed = positiveNumber(source.n_images_completed ?? source.n_images);
+  if (!completed) return null;
+  const total = positiveNumber(source.n_images_total) || completed;
+  return {
+    completed,
+    total,
+    elapsedSeconds: null,
+    source: source.source || liveSummary.source || "summary",
+  };
+}
+
 function latestMicrographProgress(job, logText, liveSummary = null) {
   const totalFromLog = totalMicrographCountFromLog(logText);
   const finalCompleted = finalInferenceCompletedCount(logText);
   if (finalCompleted) {
     return { completed: finalCompleted, total: totalFromLog || finalCompleted, elapsedSeconds: null };
   }
-  if (liveSummary?.available && Number.isFinite(Number(liveSummary.n_images_total)) && Number(liveSummary.n_images_total) > 0) {
-    return {
-      completed: Number(liveSummary.n_images_total),
-      total: totalFromLog || Number(liveSummary.n_images_total),
-      elapsedSeconds: null,
-    };
+  const liveInference = liveSummaryProgress(liveSummary, { preferInference: true });
+  // Worker log counters describe individual shards. Use the aggregated rows
+  // when available instead of letting the most recent worker reset progress.
+  if (liveInference?.source === "multi_gpu_workers") {
+    return { ...liveInference, total: totalFromLog || liveInference.total };
   }
   const samples = progressSamples(logText);
   if (samples.length) {
     const latest = samples.at(-1);
     return { ...latest, total: totalFromLog || latest.total };
   }
-  return bracketMicrographProgress(job, logText);
+  if (liveInference && liveInference.source !== "typing") {
+    return { ...liveInference, total: totalFromLog || liveInference.total };
+  }
+  const bracketProgress = bracketMicrographProgress(job, logText);
+  if (bracketProgress) return bracketProgress;
+  const liveProgress = liveSummaryProgress(liveSummary);
+  return liveProgress ? { ...liveProgress, total: totalFromLog || liveProgress.total } : null;
 }
 
 function requestedGpuCount(job, logText) {
@@ -1814,12 +1840,14 @@ function timePerMicrographMetric(job, logText, liveSummary = null) {
   const samples = progressSamples(logText);
   const progress = latestMicrographProgress(job, logText, liveSummary);
   if (!progress || !Number.isFinite(progress.completed) || progress.completed <= 0) return null;
-  const elapsed = progress.elapsedSeconds ?? durationSeconds(job.started_at || job.created_at, job.ended_at);
+  const inferenceDone = String(logText || "").match(/Phase: GPU inference complete in ([\d.]+)s/);
+  const elapsed = inferenceDone ? Number(inferenceDone[1])
+    : (progress.elapsedSeconds ?? durationSeconds(job.started_at || job.created_at, job.ended_at));
   if (!Number.isFinite(elapsed) || elapsed <= 0) return null;
   const seconds = elapsed / progress.completed;
   const average = formatThroughputSeconds(seconds);
   if (!average) return null;
-  const recent = rollingMicrographSeconds(samples);
+  const recent = progress.source === "multi_gpu_workers" ? null : rollingMicrographSeconds(samples);
   const pieces = [`avg ${average}`];
   if (recent) {
     const recentText = formatThroughputSeconds(recent.seconds);
@@ -1905,15 +1933,24 @@ async function loadStatus() {
   $("#statusLine").textContent = `python ${status.python_version || status.python || "unknown"} | node ${status.node || "unknown"} | gpu ${status.gpu || "not detected"}`;
 }
 
+let jobsLoading = false;
+let selectedRenderVersion = 0;
+
 async function loadJobs() {
-  const payload = await api("/api/jobs");
-  state.jobs = payload.jobs || [];
-  if (!state.jobs.length) state.selected = null;
-  if (state.selected && !state.jobs.some((job) => job.id === state.selected)) state.selected = null;
-  if (!state.selected && state.jobs[0]) state.selected = state.jobs[0].id;
-  renderJobs();
-  renderLiveIndicator();
-  await renderSelected();
+  if (jobsLoading) return;
+  jobsLoading = true;
+  try {
+    const payload = await api("/api/jobs");
+    state.jobs = payload.jobs || [];
+    if (!state.jobs.length) state.selected = null;
+    if (state.selected && !state.jobs.some((job) => job.id === state.selected)) state.selected = null;
+    if (!state.selected && state.jobs[0]) state.selected = state.jobs[0].id;
+    renderJobs();
+    renderLiveIndicator();
+    await renderSelected();
+  } finally {
+    jobsLoading = false;
+  }
 }
 
 async function selectJob(id) {
@@ -1925,6 +1962,8 @@ async function selectJob(id) {
 }
 
 async function renderSelected() {
+  const version = ++selectedRenderVersion;
+  const selectedId = state.selected;
   const details = $(".details");
   const cancelButton = $("#cancelButton");
   const logEl = $("#jobLog");
@@ -1941,32 +1980,43 @@ async function renderSelected() {
     liveSummaryPanel.hidden = true;
     logEl.hidden = true;
     logEl.textContent = "";
+    logEl._logText = null;
     artifacts.innerHTML = "";
     metrics.innerHTML = "";
     $("#liveSummaryCharts").innerHTML = "";
     return;
   }
-  const job = await api(`/api/jobs/${state.selected}`);
+  const [job, log] = await Promise.all([
+    api(`/api/jobs/${selectedId}`),
+    api(`/api/jobs/${selectedId}/log?tail=256000`),
+  ]);
+  if (version !== selectedRenderVersion || state.selected !== selectedId) return;
   details.classList.remove("empty");
   $("#selectedTitle").textContent = job.title || job.kind || job.id;
   $("#selectedMeta").textContent = jobSubline(job);
   cancelButton.hidden = !["queued", "running"].includes(job.status);
-  const log = await api(`/api/jobs/${state.selected}/log?tail=256000`);
   const isLive = ["queued", "running"].includes(job.status);
   logEl.hidden = false;
   const shouldScroll = state.autoScroll || isNearBottom(logEl);
-  logEl.innerHTML = formatLog(log.text || "", isLive);
+  if (logEl._logText !== log.text || logEl._isLive !== isLive) {
+    logEl.innerHTML = formatLog(log.text || "", isLive);
+    logEl._logText = log.text;
+    logEl._isLive = isLive;
+  }
   if (shouldScroll) {
     logEl.scrollTop = logEl.scrollHeight;
   }
-  const artifactCount = await renderArtifacts();
-  const liveSummaryData = await renderLiveSummary(job);
+  const [artifactCount, liveSummaryData] = await Promise.all([renderArtifacts(), renderLiveSummary(job)]);
+  if (version !== selectedRenderVersion || state.selected !== selectedId) return;
   renderMetrics(job, log.text || "", artifactCount, liveSummaryData);
 }
 
 async function renderArtifacts() {
   const grid = $("#artifactGrid");
-  const payload = await api(`/api/jobs/${state.selected}/artifacts`);
+  const selectedId = state.selected;
+  const version = selectedRenderVersion;
+  const payload = await api(`/api/jobs/${selectedId}/artifacts`);
+  if (state.selected !== selectedId || version !== selectedRenderVersion) return 0;
   const artifacts = payload.artifacts || [];
   if (!artifacts.length) {
     grid.innerHTML = "";
@@ -1976,7 +2026,7 @@ async function renderArtifacts() {
   grid.hidden = false;
   const images = artifacts.filter((artifact) => [".png", ".jpg", ".jpeg"].includes(artifact.suffix)).slice(0, 16);
   const other = artifacts.filter((artifact) => ![".png", ".jpg", ".jpeg"].includes(artifact.suffix)).slice(0, 16);
-  grid.innerHTML = [...images, ...other].map((artifact) => {
+  const markup = [...images, ...other].map((artifact) => {
     const name = escapeHtml(artifact.relative_path || artifact.name);
     if ([".png", ".jpg", ".jpeg"].includes(artifact.suffix)) {
       const imageUrl = `${artifact.url}?v=${encodeURIComponent(String(artifact.mtime || ""))}`;
@@ -1984,7 +2034,24 @@ async function renderArtifacts() {
     }
     return `<a class="artifact" href="${escapeHtml(artifact.url)}" target="_blank"><span>${name}</span></a>`;
   }).join("");
+  if (grid._markup !== markup || !grid.innerHTML) {
+    grid.innerHTML = markup;
+    grid._markup = markup;
+  }
   return artifacts.length;
+}
+
+function monitorPhase(job, logText, liveSummary) {
+  if (!["queued", "running"].includes(job.status)) return statusText(job.status);
+  const text = String(logText || "");
+  if (text.includes("Phase: upload/register")) return "Upload/register results";
+  if (text.includes("Phase: GPU inference complete") || text.includes("Phase: final typing")) return "Final typing/finalization";
+  const progress = latestMicrographProgress(job, text, liveSummary);
+  if (progress?.total && progress.completed >= progress.total) return "Final typing/finalization";
+  if (text.includes("Phase: GPU inference") || progress?.completed > 0) {
+    return text.includes("Live typing update:") ? "Inference + live typing" : "Inference";
+  }
+  return job.status === "queued" ? "Waiting" : "Transfer/staging";
 }
 
 function renderMetrics(job, logText, artifactCount, liveSummary = null) {
@@ -1993,6 +2060,7 @@ function renderMetrics(job, logText, artifactCount, liveSummary = null) {
   const timePerMic = timePerMicrographMetric(job, logText, liveSummary);
   const rows = [
     { label: "status", value: statusText(job.status) },
+    { label: "phase", value: monitorPhase(job, logText, liveSummary) },
     { label: "runtime", value: durationText(job.started_at || job.created_at, job.ended_at) },
     { label: "artifacts", value: String(artifactCount) },
   ];
@@ -2024,6 +2092,8 @@ async function renderLiveSummary(job) {
   const panel = $("#liveSummary");
   const charts = $("#liveSummaryCharts");
   const meta = $("#liveSummaryMeta");
+  const selectedId = state.selected;
+  const version = selectedRenderVersion;
   if (!panel || !charts || !meta) return null;
   if (!state.selected || !liveSummaryJobKind(job)) {
     panel.hidden = true;
@@ -2037,7 +2107,9 @@ async function renderLiveSummary(job) {
       mode: state.liveSummary.mode || "all",
       count: String(state.liveSummary.count || 100),
     });
-    const summary = await api(`/api/jobs/${state.selected}/live-summary?${params.toString()}`);
+    const summary = await api(`/api/jobs/${selectedId}/live-summary?${params.toString()}`);
+    if (state.selected !== selectedId || version !== selectedRenderVersion || params.get("mode") !== (state.liveSummary.mode || "all")
+        || params.get("count") !== String(state.liveSummary.count || 100)) return null;
     if (!summary.available) {
       meta.textContent = summary.message || "Waiting for summary data.";
       charts.innerHTML = [
@@ -2046,7 +2118,7 @@ async function renderLiveSummary(job) {
       ].join("");
       return summary;
     }
-    meta.textContent = liveSummaryMeta(summary);
+    meta.textContent = liveSummaryMeta(summary, job);
     const contaminationPct = percent(summary.contamination_fraction || 0);
     const totalSegments = [
       { label: "clean", value: Number(summary.clean_pixels || 0), color: "#3FBF9B" },
@@ -2083,18 +2155,26 @@ async function renderLiveSummary(job) {
   }
 }
 
-function liveSummaryMeta(summary) {
+function liveSummaryMeta(summary, job = null) {
   const mode = summary.mode || "all";
-  const range = mode === "all"
-    ? "whole data set"
-    : `${mode === "last" ? "last" : "first"} ${Number(summary.n_images || 0).toLocaleString()} images`;
+  const shown = Number(summary.n_images || 0);
+  const completed = positiveNumber(summary.n_images_completed) || shown;
+  const total = positiveNumber(summary.n_images_total) || completed;
+  const active = ["queued", "running"].includes(job?.status || "");
+  let range;
+  if (mode === "all") {
+    range = active || completed < total ? "completed so far" : "whole data set";
+  } else {
+    const label = `${mode === "last" ? "last" : "first"} ${shown.toLocaleString()} images`;
+    range = completed > shown ? `${label} shown` : label;
+  }
   const sourceLabels = {
     typing: "typing",
     multi_gpu_workers: "multi-GPU inference",
     inference: "inference",
   };
   const source = sourceLabels[summary.source] || "inference";
-  return `${Number(summary.n_images || 0).toLocaleString()}/${Number(summary.n_images_total || 0).toLocaleString()} images | ${range} | ${source}`;
+  return `${completed.toLocaleString()}/${total.toLocaleString()} images${summary.source === "typing" ? " typed" : ""} | ${range} | ${source}`;
 }
 
 function renderPieBlock(title, segments, center, subline, options = {}) {

@@ -750,7 +750,7 @@ def test_run_local_inference_builds_required_input_flag(
         calls.append((argv, kwargs))
         return _Completed(returncode=0)
 
-    monkeypatch.setattr(predict_helpers.subprocess, "run", fake_run)
+    monkeypatch.setattr(predict_helpers, "_run_polled_command", fake_run)
 
     command = predict_helpers.run_local_inference(
         input_dir=tmp_path / "mics",
@@ -787,7 +787,7 @@ def test_run_local_inference_can_defer_particle_overlay_rendering(
         calls.append((argv, kwargs))
         return _Completed(returncode=0)
 
-    monkeypatch.setattr(predict_helpers.subprocess, "run", fake_run)
+    monkeypatch.setattr(predict_helpers, "_run_polled_command", fake_run)
 
     command = predict_helpers.run_local_inference(
         input_dir=tmp_path / "mics",
@@ -803,6 +803,51 @@ def test_run_local_inference_can_defer_particle_overlay_rendering(
     assert "--render-particle-overlays" not in command
     assert "--no-particle-overlay-contact-sheet" not in command
     assert calls[0][0] == command
+
+
+def test_run_local_inference_writes_live_summary_when_polled(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    calls = []
+    polls = []
+
+    class FakeProcess:
+        def __init__(self, argv, **kwargs):
+            calls.append((argv, kwargs))
+            self.returncode = None
+            self._polls = 0
+
+        def poll(self):
+            self._polls += 1
+            if self._polls == 1:
+                return None
+            self.returncode = 0
+            return 0
+
+        def terminate(self):
+            self.returncode = -15
+
+    monkeypatch.setattr(predict_helpers.subprocess, "Popen", FakeProcess)
+    monkeypatch.setattr(predict_helpers.time, "sleep", lambda _seconds: None)
+
+    command = predict_helpers.run_local_inference(
+        input_dir=tmp_path / "mics",
+        output_dir=tmp_path / "infer",
+        checkpoint=tmp_path / "model.pt",
+        threshold=0.6,
+        particle_star=tmp_path / "particles.star",
+        exclusion_distance_angstrom=100.0,
+        poll_callback=lambda: polls.append("poll"),
+    )
+
+    assert calls[0][0] == command
+    assert "--render-particle-overlays" in command
+    assert "--live-summary-file" in command
+    assert Path(command[command.index("--live-summary-file") + 1]) == (
+        tmp_path / "infer" / ".cryofilter_worker_00_summary.json"
+    ).resolve()
+    assert polls
 
 
 def test_write_typing_manifest_from_transfer_pairs_micrographs_and_masks(tmp_path: Path) -> None:
@@ -987,7 +1032,7 @@ def test_run_local_typing_builds_command(monkeypatch: pytest.MonkeyPatch, tmp_pa
         calls.append((argv, kwargs))
         return _Completed(returncode=0)
 
-    monkeypatch.setattr(predict_helpers.subprocess, "run", fake_run)
+    monkeypatch.setattr(predict_helpers, "_run_polled_command", fake_run)
 
     command = predict_helpers.run_local_typing(
         manifest_path=tmp_path / "typing_manifest.csv",
@@ -996,11 +1041,15 @@ def test_run_local_typing_builds_command(monkeypatch: pytest.MonkeyPatch, tmp_pa
         min_component_area_px=75,
         pixel_size_angstrom=1.35,
         expected_images=60,
+        workers=3,
+        incremental=True,
         timeout=12.0,
         env_overrides={"OMP_NUM_THREADS": "8"},
     )
 
-    assert command[:4] == [predict_helpers.sys.executable, "-m", "cryofilter.cli", "type"]
+    assert command[:3] == [predict_helpers.sys.executable, "-m", "cryofilter.typing_cli"]
+    assert command[command.index("--workers") + 1] == "3"
+    assert "--incremental" in command
     assert "--manifest" in command
     assert "--output-dir" in command
     assert "--min-component-area-px" in command
@@ -1008,7 +1057,7 @@ def test_run_local_typing_builds_command(monkeypatch: pytest.MonkeyPatch, tmp_pa
     assert command[command.index("--expected-images") + 1] == "60"
     assert calls[0][0] == command
     assert calls[0][1]["timeout"] == 12.0
-    assert calls[0][1]["env"]["OMP_NUM_THREADS"] == "8"
+    assert calls[0][1]["env"]["OMP_NUM_THREADS"] == "1"
 
 
 def test_live_typing_updater_runs_partial_typing_and_refreshes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1047,10 +1096,15 @@ def test_live_typing_updater_runs_partial_typing_and_refreshes(tmp_path: Path, m
         ),
         encoding="utf-8",
     )
+    import threading
+    started = threading.Event()
+    release = threading.Event()
     captured: dict[str, object] = {}
 
     def fake_run_local_typing(**kwargs):
         captured["typing"] = kwargs
+        started.set()
+        assert release.wait(timeout=5)
         Path(kwargs["output_dir"]).mkdir(parents=True, exist_ok=True)
         (Path(kwargs["output_dir"]) / "summary.json").write_text("{}", encoding="utf-8")
         return ["typing"]
@@ -1081,6 +1135,19 @@ def test_live_typing_updater_runs_partial_typing_and_refreshes(tmp_path: Path, m
     )
 
     updater()
+    try:
+        assert started.wait(timeout=5), "typing should start in a background thread"
+        assert updater.last_images == 0  # Do not count failed/in-flight work as completed.
+        first_thread = updater._thread
+        updater.last_attempt = 0
+        updater()
+        assert updater._thread is first_thread
+        assert first_thread.is_alive()
+    finally:
+        release.set()
+        updater.close()
+    assert updater.last_images == 1
+    assert captured["typing"]["incremental"] is True
 
     assert captured["typing"]["expected_images"] == 2
     assert captured["typing"]["env_overrides"] == {"OMP_NUM_THREADS": "8"}
@@ -1199,6 +1266,33 @@ def test_refresh_typed_particle_overlays_writes_four_panel_png(tmp_path: Path) -
     assert frame.size == (64 * 4 + 16 * 3, 48)
     summary = json.loads((inference_dir / "inference_summary.json").read_text(encoding="utf-8"))
     assert summary["particle_overlay_rendering"]["typed_mask_panel"] is True
+
+    stamp = overlay_path.stat().st_mtime_ns
+    refreshed = remote_cli._refresh_typed_particle_overlays(
+        local_manifest_file=run_dir / "transfer_manifest.json",
+        local_transfer_dir=transfer_dir,
+        local_inference_dir=inference_dir,
+        inference_summary_file=inference_dir / "inference_summary.json",
+        typing_summary_path=typing_dir / "summary.json",
+        particle_exclusion_distance_angstrom=0.0,
+    )
+    assert refreshed["rendered"] == 0
+    assert refreshed["refreshed"] == 1
+    assert overlay_path.stat().st_mtime_ns == stamp
+    typed_path = next(typed_dir.glob("*.npy"))
+    typed = np.load(typed_path)
+    typed[typed == 1] = 2
+    np.save(typed_path, typed)
+    refreshed = remote_cli._refresh_typed_particle_overlays(
+        local_manifest_file=run_dir / "transfer_manifest.json",
+        local_transfer_dir=transfer_dir,
+        local_inference_dir=inference_dir,
+        inference_summary_file=inference_dir / "inference_summary.json",
+        typing_summary_path=typing_dir / "summary.json",
+        particle_exclusion_distance_angstrom=0.0,
+    )
+    assert refreshed["rendered"] == 1
+    assert overlay_path.stat().st_mtime_ns != stamp
 
 
 def test_refresh_typed_particle_overlays_creates_four_panel_otf_when_inference_deferred(
@@ -1332,12 +1426,12 @@ def test_auto_typing_defaults_to_enabled_without_summary(tmp_path: Path) -> None
     )
 
 
-def test_initial_particle_overlays_are_deferred_for_typed_otfs(tmp_path: Path) -> None:
-    assert not remote_cli._render_initial_particle_overlays(
+def test_initial_particle_overlays_are_rendered_before_typed_refresh(tmp_path: Path) -> None:
+    assert remote_cli._render_initial_particle_overlays(
         run_typing=True,
         typing_summary_path=None,
     )
-    assert not remote_cli._render_initial_particle_overlays(
+    assert remote_cli._render_initial_particle_overlays(
         run_typing=False,
         typing_summary_path=tmp_path / "typing" / "summary.json",
     )
@@ -1347,8 +1441,10 @@ def test_initial_particle_overlays_are_deferred_for_typed_otfs(tmp_path: Path) -
     )
 
 
+@pytest.mark.parametrize("live_mode", ["background", "final-only"])
 def test_predict_orchestrates_prepare_infer_push_and_finalize(
     monkeypatch: pytest.MonkeyPatch,
+    live_mode: str,
     tmp_path: Path,
 ) -> None:
     monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
@@ -1562,6 +1658,7 @@ def test_predict_orchestrates_prepare_infer_push_and_finalize(
         particle_exclusion_distance_angstrom=100.0,
         typing_summary=None,
         run_typing=None,
+        live_typing=live_mode,
         typing_normalization_method=None,
         typing_min_component_area_px=None,
         typing_pixel_size_angstrom=None,
@@ -1581,11 +1678,13 @@ def test_predict_orchestrates_prepare_infer_push_and_finalize(
 
     assert remote_cli._run_predict(args, config) == 0
 
-    assert captured_inference["num_cpus"] == 8
+    live_workers = captured_inference["poll_callback"].typing_workers if live_mode == "background" else 0
+    cpu_budget = remote_cli._local_cpu_budget({"CRYOFILTER_NUM_CPUS": "8"}) if live_mode == "background" else 8
+    assert captured_inference["num_cpus"] == cpu_budget - live_workers
     assert captured_inference["num_gpus"] == 1
-    assert captured_inference["render_particle_overlays"] is False
-    assert callable(captured_inference["poll_callback"])
-    assert captured_inference["env_overrides"]["OMP_NUM_THREADS"] == "8"
+    assert captured_inference["render_particle_overlays"] is True
+    assert callable(captured_inference["poll_callback"]) == (live_mode == "background")
+    assert captured_inference["env_overrides"]["OMP_NUM_THREADS"] == str(cpu_budget - live_workers)
     assert captured_inference["env_overrides"]["CUDA_VISIBLE_DEVICES"] == "0"
     assert captured_typing["env_overrides"]["OMP_NUM_THREADS"] == "8"
     assert captured_typed_overlay_refresh["create_if_missing"] is True
