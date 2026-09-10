@@ -51,6 +51,7 @@ ARTIFACT_SUFFIXES = {
     ".txt",
     ".log",
 }
+IMAGE_ARTIFACT_SUFFIXES = {".png", ".jpg", ".jpeg"}
 DEFAULT_PUBLIC_CHECKPOINT_RELATIVE = Path("pretrained_models") / "cryoFILTER_FULL.pt"
 CONTAMINATION_TYPE_LABELS = ("Carbon", "Crystalline", "Aggregate", "Ethane")
 CONTAMINATION_TYPE_COLORS = {
@@ -1388,6 +1389,14 @@ def _csv_number(row: dict[str, str], key: str) -> float:
         return 0.0
 
 
+def _positive_int(value: object) -> int | None:
+    try:
+        parsed = int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
 def _select_summary_rows(
     rows: list[dict[str, str]],
     *,
@@ -1456,6 +1465,57 @@ def _candidate_worker_inference_summary_files(roots: Sequence[Path]) -> list[Pat
     return sorted(unique.values(), key=lambda path: str(path))
 
 
+def _candidate_transfer_manifest_files(roots: Sequence[Path]) -> list[Path]:
+    candidates: list[Path] = []
+    for root in roots:
+        candidates.extend([root / "transfer_manifest.json", root / "transfer" / "transfer_manifest.json"])
+        if root.exists():
+            candidates.extend(root.glob("*/transfer_manifest.json"))
+            candidates.extend(root.glob("*/transfer/transfer_manifest.json"))
+    unique = {path.resolve(): path for path in candidates if path.exists() and path.is_file()}
+    return sorted(unique.values(), key=lambda path: path.stat().st_mtime, reverse=True)
+
+
+def _transfer_manifest_micrograph_count(roots: Sequence[Path]) -> int | None:
+    for path in _candidate_transfer_manifest_files(roots):
+        try:
+            payload = _load_json_object(path)
+        except Exception:
+            continue
+        micrographs = payload.get("micrographs")
+        if isinstance(micrographs, list) and micrographs:
+            return int(len(micrographs))
+    return None
+
+
+def _is_visible_artifact_path(root: Path, path: Path) -> bool:
+    try:
+        rel_parts = path.relative_to(root).parts
+    except ValueError:
+        rel_parts = path.parts
+    return not any(part.startswith(".") for part in rel_parts)
+
+
+def _artifact_sort_key(root: Path, path: Path) -> tuple[int, int, str]:
+    suffix = path.suffix.lower()
+    try:
+        rel = path.relative_to(root).as_posix()
+    except ValueError:
+        rel = path.as_posix()
+    rel_lower = rel.lower()
+    is_image = suffix in IMAGE_ARTIFACT_SUFFIXES
+    is_otf = "/otf_images/" in f"/{rel_lower}" or rel_lower.endswith("_particle_overlay.png")
+    if is_otf and is_image:
+        priority = 0
+    elif is_image:
+        priority = 1
+    elif rel_lower.endswith("inference_summary.json") or rel_lower.endswith("summary.json"):
+        priority = 2
+    else:
+        priority = 3
+    return (priority, -int(path.stat().st_mtime), rel)
+
+
 def _load_json_object(path: Path) -> dict[str, Any]:
     payload = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
@@ -1485,6 +1545,7 @@ def _typing_live_summary(
     if not rows:
         return None
     selected = _select_summary_rows(rows, mode=mode, count=count)
+    n_images_total = _positive_int(summary.get("n_images_expected")) or _positive_int(summary.get("n_images_total")) or int(len(rows))
     type_order_raw = summary.get("type_order")
     type_order = [
         str(label)
@@ -1513,7 +1574,7 @@ def _typing_live_summary(
         "mode": mode,
         "count": count,
         "n_images": int(len(selected)),
-        "n_images_total": int(len(rows)),
+        "n_images_total": int(n_images_total),
         "total_pixels": total_pixels,
         "contaminated_pixels": contaminated_pixels,
         "clean_pixels": clean_pixels,
@@ -1556,7 +1617,8 @@ def _inference_live_summary(
     mode: str,
     count: int,
 ) -> dict[str, Any] | None:
-    rows = _inference_rows(_load_json_object(summary_path))
+    payload = _load_json_object(summary_path)
+    rows = _inference_rows(payload)
     if not rows:
         return None
     return _inference_live_summary_from_rows(
@@ -1565,6 +1627,7 @@ def _inference_live_summary(
         count=count,
         source="inference",
         source_path=summary_path,
+        n_images_total=_positive_int(payload.get("n_images_expected")),
     )
 
 
@@ -1576,6 +1639,7 @@ def _inference_live_summary_from_rows(
     source: str,
     source_path: Path | None = None,
     source_paths: Sequence[Path] | None = None,
+    n_images_total: int | None = None,
 ) -> dict[str, Any] | None:
     if not rows:
         return None
@@ -1589,7 +1653,7 @@ def _inference_live_summary_from_rows(
         "mode": mode,
         "count": count,
         "n_images": int(len(selected)),
-        "n_images_total": int(len(rows)),
+        "n_images_total": int(n_images_total or len(rows)),
         "total_pixels": total_pixels,
         "contaminated_pixels": contaminated_pixels,
         "clean_pixels": max(0, total_pixels - contaminated_pixels),
@@ -1609,6 +1673,7 @@ def _worker_inference_live_summary(
     *,
     mode: str,
     count: int,
+    n_images_total: int | None = None,
 ) -> dict[str, Any] | None:
     rows: list[dict[str, str]] = []
     loaded_paths: list[Path] = []
@@ -1630,6 +1695,7 @@ def _worker_inference_live_summary(
         count=count,
         source="multi_gpu_workers",
         source_paths=loaded_paths,
+        n_images_total=n_images_total,
     )
 
 
@@ -1639,6 +1705,7 @@ def _build_live_summary(
     mode: str,
     count: int,
 ) -> dict[str, Any]:
+    n_images_total = _transfer_manifest_micrograph_count(roots)
     for summary_path in _candidate_typing_summary_files(roots):
         try:
             summary = _typing_live_summary(summary_path, mode=mode, count=count)
@@ -1655,7 +1722,12 @@ def _build_live_summary(
             return summary
     worker_summary_paths = _candidate_worker_inference_summary_files(roots)
     if worker_summary_paths:
-        summary = _worker_inference_live_summary(worker_summary_paths, mode=mode, count=count)
+        summary = _worker_inference_live_summary(
+            worker_summary_paths,
+            mode=mode,
+            count=count,
+            n_images_total=n_images_total,
+        )
         if summary is not None:
             return summary
     return _empty_live_summary("Waiting for inference or typing summary data.")
@@ -1954,7 +2026,14 @@ class AppState:
         for root_index, root in enumerate(roots):
             if not root.exists():
                 continue
-            for path in sorted(root.rglob("*"), key=lambda item: item.stat().st_mtime, reverse=True):
+            paths = [
+                path
+                for path in root.rglob("*")
+                if path.is_file()
+                and path.suffix.lower() in ARTIFACT_SUFFIXES
+                and _is_visible_artifact_path(root, path)
+            ]
+            for path in sorted(paths, key=lambda item: _artifact_sort_key(root, item)):
                 if not path.is_file() or path.suffix.lower() not in ARTIFACT_SUFFIXES:
                     continue
                 rel = path.relative_to(root).as_posix()

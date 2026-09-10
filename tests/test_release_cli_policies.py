@@ -24,6 +24,7 @@ from cryofilter.cli import (
     _build_parser,
     _default_output_dir_for_input,
     _merge_worker_summaries,
+    _multi_gpu_worker,
     _resolve_auto_batch_forward_size,
     _resolve_inference_devices,
     _shard_mrc_paths,
@@ -237,11 +238,78 @@ def test_multi_gpu_parser_sharding_and_summary_order(tmp_path: Path, monkeypatch
     assert shards == [mrc_paths[0::2], mrc_paths[1::2]]
 
     worker_summaries = [
-        {"device": "cuda:0", "inputs": [{"input_mrc": str(path)} for path in shards[0]]},
-        {"device": "cuda:1", "inputs": [{"input_mrc": str(path)} for path in shards[1]]},
+        {
+            "device": "cuda:0",
+            "inputs": [
+                {"input_mrc": str(path), "particle_overlay": {"output_png": str(tmp_path / f"{path.stem}.png")}}
+                for path in shards[0]
+            ],
+            "particle_overlay_rendering": {
+                "enabled": True,
+                "output_dir": str(tmp_path / "OTF_images"),
+                "frames": [
+                    {"micrograph": str(path), "output_png": str(tmp_path / f"{path.stem}.png")}
+                    for path in shards[0]
+                ],
+            },
+        },
+        {
+            "device": "cuda:1",
+            "inputs": [
+                {"input_mrc": str(path), "particle_overlay": {"output_png": str(tmp_path / f"{path.stem}.png")}}
+                for path in shards[1]
+            ],
+            "particle_overlay_rendering": {
+                "enabled": True,
+                "output_dir": str(tmp_path / "OTF_images"),
+                "frames": [
+                    {"micrograph": str(path), "output_png": str(tmp_path / f"{path.stem}.png")}
+                    for path in shards[1]
+                ],
+            },
+        },
     ]
     merged = _merge_worker_summaries(worker_summaries, mrc_paths)
     assert [Path(row["input_mrc"]) for row in merged["inputs"]] == mrc_paths
+    assert [
+        Path(frame["micrograph"])
+        for frame in merged["particle_overlay_rendering"]["frames"]
+    ] == mrc_paths
+
+
+def test_multi_gpu_worker_preserves_live_particle_overlays(tmp_path: Path, monkeypatch) -> None:
+    captured = {}
+
+    def fake_run_infer(args, *, mrc_paths_override, finalize, live_summary_path):
+        captured["particle_file"] = args.particle_file
+        captured["render_particle_overlays"] = args.render_particle_overlays
+        captured["filtered_particle_file"] = args.filtered_particle_file
+        captured["particle_overlay_contact_sheet"] = args.particle_overlay_contact_sheet
+        captured["finalize"] = finalize
+        captured["live_summary_path"] = live_summary_path
+        return {"inputs": []}
+
+    monkeypatch.setattr("cryofilter.cli._run_infer", fake_run_infer)
+
+    _multi_gpu_worker(
+        {
+            "particle_file": "particles.star",
+            "filtered_particle_file": "filtered.star",
+            "render_particle_overlays": True,
+            "particle_overlay_contact_sheet": True,
+        },
+        [tmp_path / "mic_001.mrc"],
+        tmp_path / "worker_summary.json",
+    )
+
+    assert captured == {
+        "particle_file": "particles.star",
+        "render_particle_overlays": True,
+        "filtered_particle_file": None,
+        "particle_overlay_contact_sheet": False,
+        "finalize": False,
+        "live_summary_path": tmp_path / "worker_summary.json",
+    }
 
 
 def test_default_output_dir_is_derived_from_input_path(tmp_path) -> None:

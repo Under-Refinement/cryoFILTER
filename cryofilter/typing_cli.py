@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 from typing import Iterable, Optional, Sequence
 
@@ -48,6 +49,16 @@ INTERNAL_TO_PUBLIC_TYPE = {
     "diffuse": "Aggregate",
     "isolated": "Ethane",
 }
+COMPONENT_SUMMARY_COLUMNS = (
+    "image_id",
+    "dataset_id",
+    "stem",
+    "component_id",
+    "area_px",
+    "small_component_auto_ethane",
+    "type",
+    "type_confidence",
+)
 
 
 def _add_type_arguments(ap: argparse.ArgumentParser) -> None:
@@ -481,6 +492,68 @@ def _print_overall_summary(summary: dict[str, object]) -> None:
         )
 
 
+def _write_json_atomic(path: Path, payload: dict[str, object]) -> None:
+    tmp_path = path.with_name(f".{path.name}.tmp.{os.getpid()}")
+    tmp_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    tmp_path.replace(path)
+
+
+def _write_csv_atomic(df: pd.DataFrame, path: Path) -> None:
+    tmp_path = path.with_name(f".{path.name}.tmp.{os.getpid()}")
+    df.to_csv(tmp_path, index=False)
+    tmp_path.replace(path)
+
+
+def _component_summary_df(component_rows: Sequence[dict[str, object]]) -> pd.DataFrame:
+    component_df = pd.DataFrame(component_rows)
+    if component_df.empty:
+        return pd.DataFrame(columns=COMPONENT_SUMMARY_COLUMNS)
+    return _assign_types(component_df)
+
+
+def _write_summary_outputs(
+    *,
+    output_dir: Path,
+    bands_json: Path,
+    args: argparse.Namespace,
+    component_df: pd.DataFrame,
+    manifest_rows: Sequence[pd.Series],
+    expected_images: int,
+    status: str,
+) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, object]]:
+    image_summary_df = pd.DataFrame(_image_summary_rows(component_df, manifest_rows)).sort_values("image_id").reset_index(drop=True)
+    image_summary_csv = output_dir / "image_contamination_summary.csv"
+    _write_csv_atomic(image_summary_df, image_summary_csv)
+
+    dataset_summary_df = _dataset_summary_df(image_summary_df)
+    dataset_summary_csv = output_dir / "dataset_contamination_summary.csv"
+    _write_csv_atomic(dataset_summary_df, dataset_summary_csv)
+
+    overall_summary = _overall_summary(image_summary_df)
+    component_csv = output_dir / "component_type_assignments.csv"
+    summary_payload = {
+        "manifest": str(args.manifest.expanduser().resolve()),
+        "output_dir": str(output_dir),
+        "bands_json": str(bands_json),
+        "normalization_method": str(args.normalization_method),
+        "pixel_size_override_angstrom": (None if args.pixel_size_angstrom is None else float(args.pixel_size_angstrom)),
+        "min_component_area_px": int(args.min_component_area_px),
+        "type_order": list(PUBLIC_TYPE_ORDER),
+        "type_to_id": {label: int(PUBLIC_TYPE_TO_ID[label]) for label in PUBLIC_TYPE_ORDER},
+        "overall_contamination_summary": overall_summary,
+        "component_type_assignments_csv": str(component_csv),
+        "image_contamination_summary_csv": str(image_summary_csv),
+        "dataset_contamination_summary_csv": str(dataset_summary_csv),
+        "typed_mask_dir": str(output_dir / "typed_masks"),
+        "n_images": int(image_summary_df.shape[0]),
+        "n_images_expected": int(expected_images),
+        "n_components": int(component_df.shape[0]),
+        "typing_status": str(status),
+    }
+    _write_json_atomic(output_dir / "summary.json", summary_payload)
+    return image_summary_df, dataset_summary_df, overall_summary
+
+
 def run(args: argparse.Namespace) -> int:
     manifest_path = args.manifest.expanduser().resolve()
     output_dir = args.output_dir.expanduser().resolve()
@@ -608,34 +681,30 @@ def run(args: argparse.Namespace) -> int:
         row_with_geometry["_total_pixels"] = int(h * w)
         row_with_geometry["_contaminated_pixels"] = int(total_contam_pixels)
         manifest_rows.append(row_with_geometry)
-
-    component_df = pd.DataFrame(component_rows)
-    if component_df.empty:
-        component_df = pd.DataFrame(
-            columns=(
-                "image_id",
-                "dataset_id",
-                "stem",
-                "component_id",
-                "area_px",
-                "small_component_auto_ethane",
-                "type",
-                "type_confidence",
-            )
+        partial_component_df = _component_summary_df(component_rows)
+        _write_summary_outputs(
+            output_dir=output_dir,
+            bands_json=bands_json,
+            args=args,
+            component_df=partial_component_df,
+            manifest_rows=manifest_rows,
+            expected_images=int(len(manifest_df)),
+            status="running",
         )
-    else:
-        component_df = _assign_types(component_df)
+        print(f"Typed {len(manifest_rows)}/{len(manifest_df)} image(s); live summary updated.", flush=True)
+
+    component_df = _component_summary_df(component_rows)
     component_csv = output_dir / "component_type_assignments.csv"
-    component_df.to_csv(component_csv, index=False)
-
-    image_summary_df = pd.DataFrame(_image_summary_rows(component_df, manifest_rows)).sort_values("image_id").reset_index(drop=True)
-    image_summary_csv = output_dir / "image_contamination_summary.csv"
-    image_summary_df.to_csv(image_summary_csv, index=False)
-
-    dataset_summary_df = _dataset_summary_df(image_summary_df)
-    dataset_summary_csv = output_dir / "dataset_contamination_summary.csv"
-    dataset_summary_df.to_csv(dataset_summary_csv, index=False)
-    overall_summary = _overall_summary(image_summary_df)
+    _write_csv_atomic(component_df, component_csv)
+    image_summary_df, dataset_summary_df, overall_summary = _write_summary_outputs(
+        output_dir=output_dir,
+        bands_json=bands_json,
+        args=args,
+        component_df=component_df,
+        manifest_rows=manifest_rows,
+        expected_images=int(len(manifest_df)),
+        status="complete",
+    )
 
     for key, row in manifest_df.groupby(["dataset_id", "stem"], sort=True):
         dataset_id, stem = key
@@ -645,29 +714,10 @@ def run(args: argparse.Namespace) -> int:
         typed = _typed_mask_for_image(mask, component_df.loc[component_df["image_id"] == image_id].copy())
         np.save(typed_mask_dir / f"{image_id}_typed_mask.npy", typed.astype(np.uint8))
 
-    summary_payload = {
-        "manifest": str(manifest_path),
-        "output_dir": str(output_dir),
-        "bands_json": str(bands_json),
-        "normalization_method": str(args.normalization_method),
-        "pixel_size_override_angstrom": (None if args.pixel_size_angstrom is None else float(args.pixel_size_angstrom)),
-        "min_component_area_px": int(args.min_component_area_px),
-        "type_order": list(PUBLIC_TYPE_ORDER),
-        "type_to_id": {label: int(PUBLIC_TYPE_TO_ID[label]) for label in PUBLIC_TYPE_ORDER},
-        "overall_contamination_summary": overall_summary,
-        "component_type_assignments_csv": str(component_csv),
-        "image_contamination_summary_csv": str(image_summary_csv),
-        "dataset_contamination_summary_csv": str(dataset_summary_csv),
-        "typed_mask_dir": str(typed_mask_dir),
-        "n_images": int(image_summary_df.shape[0]),
-        "n_components": int(component_df.shape[0]),
-    }
-    (output_dir / "summary.json").write_text(json.dumps(summary_payload, indent=2) + "\n", encoding="utf-8")
-
     _print_overall_summary(overall_summary)
     print(f"Wrote component table: {component_csv}")
-    print(f"Wrote image summary:  {image_summary_csv}")
-    print(f"Wrote dataset summary:{dataset_summary_csv}")
+    print(f"Wrote image summary:  {output_dir / 'image_contamination_summary.csv'}")
+    print(f"Wrote dataset summary:{output_dir / 'dataset_contamination_summary.csv'}")
     print(f"Wrote typed masks:    {typed_mask_dir}")
     return 0
 

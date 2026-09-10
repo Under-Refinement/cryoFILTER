@@ -181,6 +181,8 @@ def test_public_typing_uses_required_names_and_handles_clean_images(
 
     payload = json.loads((output_dir / "summary.json").read_text(encoding="utf-8"))
     assert payload["type_order"] == ["Carbon", "Crystalline", "Aggregate", "Ethane"]
+    assert payload["n_images_expected"] == 2
+    assert payload["typing_status"] == "complete"
     assert payload["type_to_id"] == {
         "Carbon": 1,
         "Crystalline": 2,
@@ -194,6 +196,7 @@ def test_public_typing_uses_required_names_and_handles_clean_images(
     assert set(np.unique(typed)) == {0, 4}
 
     stdout = capsys.readouterr().out
+    assert "live summary updated" in stdout
     assert "Total contamination:" in stdout
     assert "Carbon:" in stdout
     assert "Crystalline:" in stdout

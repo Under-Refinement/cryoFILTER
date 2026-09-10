@@ -862,6 +862,30 @@ def test_app_state_marks_interrupted_jobs_stale(tmp_path: Path) -> None:
     assert meta["stale_reason"] == "server_restarted"
 
 
+def test_app_state_artifacts_prioritize_otf_images_and_hide_dotfiles(tmp_path: Path) -> None:
+    state = AppState(tmp_path)
+    job_id = "artifacts123"
+    run_dir = tmp_path / "runs" / "one"
+    otf_dir = run_dir / "inference" / "OTF_images"
+    otf_dir.mkdir(parents=True)
+    (run_dir / ".cryofilter_worker_00_summary.json").write_text("{}", encoding="utf-8")
+    (run_dir / "transfer_manifest.json").write_text("{}", encoding="utf-8")
+    (otf_dir / "mic_001_particle_overlay.png").write_bytes(b"png")
+    job_dir = state.jobs_dir / job_id
+    job_dir.mkdir(parents=True)
+    (job_dir / "meta.json").write_text(
+        json.dumps({"id": job_id, "kind": "cryosparc_predict", "artifact_roots": [str(run_dir)]}),
+        encoding="utf-8",
+    )
+
+    artifacts = state.list_artifacts(job_id)
+
+    assert artifacts[0]["relative_path"] == "inference/OTF_images/mic_001_particle_overlay.png"
+    assert ".cryofilter_worker_00_summary.json" not in {
+        item["relative_path"] for item in artifacts
+    }
+
+
 def test_app_state_live_summary_aggregates_typing_range(tmp_path: Path) -> None:
     state = AppState(tmp_path)
     job_id = "summary123"
@@ -886,6 +910,7 @@ def test_app_state_live_summary_aggregates_typing_range(tmp_path: Path) -> None:
             {
                 "type_order": ["Carbon", "Crystalline", "Aggregate", "Ethane"],
                 "image_contamination_summary_csv": str(image_csv),
+                "n_images_expected": 10,
             }
         ),
         encoding="utf-8",
@@ -902,7 +927,7 @@ def test_app_state_live_summary_aggregates_typing_range(tmp_path: Path) -> None:
     assert summary["available"] is True
     assert summary["source"] == "typing"
     assert summary["n_images"] == 2
-    assert summary["n_images_total"] == 3
+    assert summary["n_images_total"] == 10
     assert summary["total_pixels"] == 300
     assert summary["contaminated_pixels"] == 80
     assert summary["clean_pixels"] == 220
@@ -926,6 +951,10 @@ def test_app_state_live_summary_aggregates_multi_gpu_worker_summaries(tmp_path: 
     run_dir = tmp_path / "runs" / "one"
     inference_dir = run_dir / "inference"
     inference_dir.mkdir(parents=True)
+    (run_dir / "transfer_manifest.json").write_text(
+        json.dumps({"micrographs": [{} for _ in range(60)]}),
+        encoding="utf-8",
+    )
     for worker_index, rows in enumerate(
         [
             [
@@ -966,7 +995,7 @@ def test_app_state_live_summary_aggregates_multi_gpu_worker_summaries(tmp_path: 
     assert summary["source"] == "multi_gpu_workers"
     assert summary["worker_count"] == 2
     assert summary["n_images"] == 3
-    assert summary["n_images_total"] == 4
+    assert summary["n_images_total"] == 60
     assert summary["total_pixels"] == 500
     assert summary["contaminated_pixels"] == 90
     assert summary["clean_pixels"] == 410

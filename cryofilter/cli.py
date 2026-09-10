@@ -258,6 +258,41 @@ def _merge_worker_summaries(
 
     summary = dict(worker_summaries[0])
     summary["inputs"] = ordered_rows
+    overlay_summaries = [
+        item.get("particle_overlay_rendering")
+        for item in worker_summaries
+        if isinstance(item.get("particle_overlay_rendering"), dict)
+        and item.get("particle_overlay_rendering", {}).get("enabled")
+    ]
+    if overlay_summaries:
+        merged_overlay = dict(overlay_summaries[0])
+        frames_by_key: dict[str, dict[str, object]] = {}
+        for overlay in overlay_summaries:
+            for raw_frame in overlay.get("frames", []):
+                if not isinstance(raw_frame, dict):
+                    continue
+                frame = dict(raw_frame)
+                key = str(frame.get("output_png") or frame.get("micrograph") or "")
+                if key:
+                    frames_by_key[key] = frame
+
+        ordered_frames: list[dict[str, object]] = []
+        seen: set[str] = set()
+        for row in ordered_rows:
+            particle_overlay = row.get("particle_overlay")
+            if not isinstance(particle_overlay, dict):
+                continue
+            frame = {"micrograph": row.get("input_mrc"), **particle_overlay}
+            key = str(frame.get("output_png") or frame.get("micrograph") or "")
+            if not key or key in seen:
+                continue
+            ordered_frames.append({**frames_by_key.get(key, {}), **frame})
+            seen.add(key)
+        for key, frame in frames_by_key.items():
+            if key not in seen:
+                ordered_frames.append(frame)
+        merged_overlay["frames"] = ordered_frames
+        summary["particle_overlay_rendering"] = merged_overlay
     return summary
 
 
@@ -1023,7 +1058,45 @@ def _render_particle_overlays_from_summary(
         return
     existing = summary.get("particle_overlay_rendering")
     if isinstance(existing, dict) and existing.get("enabled") and existing.get("frames"):
-        return
+        rows = summary.get("inputs", [])
+        expected_count = (
+            sum(
+                1
+                for row in rows
+                if isinstance(row, dict)
+                and row.get("input_mrc")
+                and row.get("output_prob_npy")
+                and row.get("output_mask_npy")
+            )
+            if isinstance(rows, list)
+            else len(mrc_paths)
+        )
+        frame_paths = [
+            path
+            for frame in existing.get("frames", [])
+            if isinstance(frame, dict)
+            and frame.get("output_png")
+            for path in [Path(str(frame.get("output_png"))).expanduser()]
+            if path.exists()
+        ]
+        if len(frame_paths) >= expected_count:
+            if bool(args.particle_overlay_contact_sheet):
+                overlay_dir = (
+                    Path(str(existing.get("output_dir"))).expanduser().resolve()
+                    if existing.get("output_dir")
+                    else (output_dir / DEFAULT_PARTICLE_OVERLAY_SUBDIR).resolve()
+                )
+                context = {
+                    "output_dir": overlay_dir,
+                    "contact_sheet_path": overlay_dir / "particle_overlay_contact_sheet.png",
+                    "frame_paths": frame_paths,
+                    "frame_borders": [None] * len(frame_paths),
+                    "summary": existing,
+                }
+                existing["contact_sheet"] = True
+                existing["contact_sheet_path"] = str(context["contact_sheet_path"])
+                _finalize_particle_overlay_contact_sheet(context, args)
+            return
 
     context = _create_particle_overlay_context(args, output_dir=output_dir, mrc_paths=mrc_paths)
     summary["particle_overlay_rendering"] = context["summary"]
@@ -1842,10 +1915,8 @@ def _multi_gpu_worker(
 ) -> None:
     """Spawn-safe worker entry point; particle filtering is finalized by the parent."""
     worker_args = argparse.Namespace(**args_payload)
-    worker_args.particle_file = None
     worker_args.filtered_particle_file = None
-    worker_args.particle_csg = None
-    worker_args.render_particle_overlays = False
+    worker_args.particle_overlay_contact_sheet = False
     result = _run_infer(
         worker_args,
         mrc_paths_override=mrc_paths,
