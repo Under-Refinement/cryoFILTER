@@ -1332,6 +1332,21 @@ def test_auto_typing_defaults_to_enabled_without_summary(tmp_path: Path) -> None
     )
 
 
+def test_initial_particle_overlays_are_deferred_for_typed_otfs(tmp_path: Path) -> None:
+    assert not remote_cli._render_initial_particle_overlays(
+        run_typing=True,
+        typing_summary_path=None,
+    )
+    assert not remote_cli._render_initial_particle_overlays(
+        run_typing=False,
+        typing_summary_path=tmp_path / "typing" / "summary.json",
+    )
+    assert remote_cli._render_initial_particle_overlays(
+        run_typing=False,
+        typing_summary_path=None,
+    )
+
+
 def test_predict_orchestrates_prepare_infer_push_and_finalize(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1568,7 +1583,8 @@ def test_predict_orchestrates_prepare_infer_push_and_finalize(
 
     assert captured_inference["num_cpus"] == 8
     assert captured_inference["num_gpus"] == 1
-    assert captured_inference["render_particle_overlays"] is True
+    assert captured_inference["render_particle_overlays"] is False
+    assert callable(captured_inference["poll_callback"])
     assert captured_inference["env_overrides"]["OMP_NUM_THREADS"] == "8"
     assert captured_inference["env_overrides"]["CUDA_VISIBLE_DEVICES"] == "0"
     assert captured_typing["env_overrides"]["OMP_NUM_THREADS"] == "8"

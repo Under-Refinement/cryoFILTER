@@ -1562,6 +1562,10 @@ def _resolve_auto_typing(args: argparse.Namespace, *, typing_summary_path: Path 
     return bool(raw)
 
 
+def _render_initial_particle_overlays(*, run_typing: bool, typing_summary_path: Path | None) -> bool:
+    return not (bool(run_typing) or typing_summary_path is not None)
+
+
 def _validate_typing_options(args: argparse.Namespace) -> None:
     if getattr(args, "run_typing", None) is True and getattr(args, "typing_summary", None):
         raise ValueError("--run-typing and --typing-summary cannot be combined")
@@ -2175,7 +2179,10 @@ def _run_predict(args: argparse.Namespace, config: CryoSPARCIntegrationConfig) -
             env_overrides=resource_env,
             num_cpus=getattr(args, "num_cpus", None),
             num_gpus=getattr(args, "num_gpus", None),
-            render_particle_overlays=True,
+            render_particle_overlays=_render_initial_particle_overlays(
+                run_typing=run_typing,
+                typing_summary_path=typing_summary_path,
+            ),
             poll_callback=live_typing_callback,
             poll_interval=5.0,
         )
