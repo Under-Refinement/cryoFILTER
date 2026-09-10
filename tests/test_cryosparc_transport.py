@@ -1422,7 +1422,7 @@ def test_predict_orchestrates_prepare_infer_push_and_finalize(
 
     assert captured_inference["num_cpus"] == 8
     assert captured_inference["num_gpus"] == 1
-    assert captured_inference["render_particle_overlays"] is False
+    assert captured_inference["render_particle_overlays"] is True
     assert captured_inference["env_overrides"]["OMP_NUM_THREADS"] == "8"
     assert captured_inference["env_overrides"]["CUDA_VISIBLE_DEVICES"] == "0"
     assert captured_typing["env_overrides"]["OMP_NUM_THREADS"] == "8"

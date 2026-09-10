@@ -308,6 +308,10 @@ def run_local_typing(
         command.extend(["--min-component-area-px", str(int(min_component_area_px))])
     if pixel_size_angstrom is not None:
         command.extend(["--pixel-size-angstrom", str(float(pixel_size_angstrom))])
+    print(
+        "Running contamination typing; 4-panel OTF images will refresh after typing finishes.",
+        flush=True,
+    )
     print("Executing:", " ".join(shlex.quote(part) for part in command), flush=True)
     env = os.environ.copy()
     if env_overrides:

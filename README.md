@@ -97,6 +97,16 @@ cryoFILTER app
 
 Then open `http://127.0.0.1:8765/` on your laptop. If the app uses a different port, the `-L` port and browser URL must match that port.
 
+Very important: launch the app inside a persistent `screen` session so jobs keep running if you close the browser or disconnect:
+
+```bash
+screen -S cryofilter
+cd /path/to/project-or-output-directory
+cryoFILTER app
+```
+
+Detach with `Ctrl-a d`. The browser can be closed and revisited whenever as long as the app server is still running. If you stop the app server or close the terminal running it, the app cannot reliably reconnect to jobs that were running while it was closed; restart the SSH tunnel and reattach with `screen -r cryofilter` to keep the same app alive.
+
 The lowercase command is equivalent:
 
 ```bash

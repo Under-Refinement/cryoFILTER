@@ -1927,7 +1927,7 @@ def _run_predict(args: argparse.Namespace, config: CryoSPARCIntegrationConfig) -
             env_overrides=resource_env,
             num_cpus=getattr(args, "num_cpus", None),
             num_gpus=getattr(args, "num_gpus", None),
-            render_particle_overlays=not (run_typing or typing_summary_path is not None),
+            render_particle_overlays=True,
         )
         payload["inference_command"] = inference_command
 
