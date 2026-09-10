@@ -54,10 +54,11 @@ ARTIFACT_SUFFIXES = {
 DEFAULT_PUBLIC_CHECKPOINT_RELATIVE = Path("pretrained_models") / "cryoFILTER_FULL.pt"
 CONTAMINATION_TYPE_LABELS = ("Carbon", "Crystalline", "Aggregate", "Ethane")
 CONTAMINATION_TYPE_COLORS = {
-    "Carbon": "#D95F02",
-    "Crystalline": "#1B9E77",
-    "Aggregate": "#CC79A7",
-    "Ethane": "#E6AB02",
+    "Carbon": "#226F54",
+    "Support": "#226F54",
+    "Crystalline": "#003D5B",
+    "Aggregate": "#DE541E",
+    "Ethane": "#96BBBB",
 }
 
 
@@ -1373,7 +1374,8 @@ def _build_train_spec(payload: dict[str, Any], *, work_dir: Path) -> JobSpec:
 
 
 def _live_summary_slug(label: str) -> str:
-    return str(label).strip().lower().replace(" ", "_").replace("-", "_")
+    slug = str(label).strip().lower().replace(" ", "_").replace("-", "_")
+    return "carbon" if slug == "support" else slug
 
 
 def _csv_number(row: dict[str, str], key: str) -> float:

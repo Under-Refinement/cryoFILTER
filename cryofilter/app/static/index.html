@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
-    <link rel="stylesheet" href="/static/styles.css?v=20260909-cryosparc-state-sync" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260909-live-summary-ui" />
   </head>
   <body>
     <div class="shell">
@@ -83,22 +83,22 @@
                     <h3>Contamination</h3>
                     <p id="liveSummaryMeta">Waiting for summary data.</p>
                   </div>
-                  <div class="live-range-controls">
-                    <label>
-                      <span>Range</span>
-                      <select id="liveSummaryMode">
-                        <option value="all">Whole data set</option>
-                        <option value="last">Last N images</option>
-                        <option value="first">First N images</option>
-                      </select>
-                    </label>
-                    <label id="liveSummaryCountWrap">
-                      <span>N</span>
-                      <input id="liveSummaryCount" type="number" min="1" max="10000" value="100" />
-                    </label>
-                  </div>
                 </div>
                 <div id="liveSummaryCharts" class="live-charts"></div>
+                <div class="live-range-controls">
+                  <label>
+                    <span>Range</span>
+                    <select id="liveSummaryMode">
+                      <option value="all">Whole data set</option>
+                      <option value="last">Last N images</option>
+                      <option value="first">First N images</option>
+                    </select>
+                  </label>
+                  <label id="liveSummaryCountWrap">
+                    <span>N</span>
+                    <input id="liveSummaryCount" type="number" min="1" max="10000" value="100" />
+                  </label>
+                </div>
               </div>
               <pre id="jobLog" class="log" hidden></pre>
             </div>
@@ -357,7 +357,7 @@
         </section>
       </main>
     </div>
-    <script src="/static/connect.js?v=20260909-cryosparc-state-sync"></script>
-    <script src="/static/app.js?v=20260909-cryosparc-state-sync"></script>
+    <script src="/static/connect.js?v=20260909-live-summary-ui"></script>
+    <script src="/static/app.js?v=20260909-live-summary-ui"></script>
   </body>
 </html>

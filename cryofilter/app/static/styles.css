@@ -486,9 +486,7 @@ button {
 
 .live-summary-head {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
   gap: 14px;
-  align-items: end;
 }
 
 .live-summary-head p {
@@ -503,6 +501,9 @@ button {
   grid-template-columns: minmax(150px, 1fr) 76px;
   gap: 8px;
   align-items: end;
+  justify-self: center;
+  min-width: min(100%, 340px);
+  max-width: 420px;
 }
 
 .live-range-controls label {

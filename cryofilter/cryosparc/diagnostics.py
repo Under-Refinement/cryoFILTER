@@ -11,10 +11,13 @@ from cryofilter.cryosparc.protocol.manifests import write_json_model
 from cryofilter.cryosparc.protocol.models import DiagnosticAsset, DiagnosticsManifest
 
 TYPE_COLORS = {
-    "Carbon": "#D95F02",
-    "Crystalline": "#1B9E77",
-    "Aggregate": "#CC79A7",
-    "Ethane": "#E6AB02",
+    "Carbon": "#226F54",
+    "Crystalline": "#003D5B",
+    "Aggregate": "#DE541E",
+    "Ethane": "#96BBBB",
+}
+TYPE_COLOR_ALIASES = {
+    "Support": "#226F54",
 }
 DEFAULT_MAX_OVERLAY_IMAGES = 10
 
@@ -358,7 +361,8 @@ def _save_micrograph_bar(
 
 
 def _slug_for_type(label: str) -> str:
-    return label.strip().lower().replace(" ", "_").replace("-", "_")
+    slug = label.strip().lower().replace(" ", "_").replace("-", "_")
+    return "carbon" if slug == "support" else slug
 
 
 def _typing_rows(typing_summary: dict[str, Any]) -> list[dict[str, Any]]:
@@ -382,7 +386,7 @@ def _typing_rows(typing_summary: dict[str, Any]) -> list[dict[str, Any]]:
                 "area_px": area,
                 "pct_of_contamination": pct_of_contam,
                 "pct_total_image": pct_total,
-                "color": TYPE_COLORS.get(label, "#8ab4f8"),
+                "color": TYPE_COLORS.get(label, TYPE_COLOR_ALIASES.get(label, "#8ab4f8")),
             }
         )
     return [row for row in rows if row["area_px"] > 0 or row["pct_of_contamination"] > 0]

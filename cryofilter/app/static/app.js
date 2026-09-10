@@ -43,10 +43,10 @@ const state = {
 
 const ANNOTATION_TYPE_COLORS = {
   "": "#c9b7ff",
-  1: "#D95F02",
-  2: "#1B9E77",
-  3: "#CC79A7",
-  4: "#E6AB02",
+  1: "#226F54",
+  2: "#003D5B",
+  3: "#DE541E",
+  4: "#96BBBB",
 };
 const ANNOTATION_ERASE_COLOR = "#E05A5A";
 
@@ -2041,7 +2041,7 @@ async function renderLiveSummary(job) {
     if (!summary.available) {
       meta.textContent = summary.message || "Waiting for summary data.";
       charts.innerHTML = [
-        renderPieBlock("Clean vs contamination", [], "0%", "Waiting for image rows"),
+        renderPieBlock("Clean vs contamination", [], "0%", "Waiting for image rows", { showLegend: false }),
         renderPieBlock("Type breakdown", [], "0%", "Waiting for typing"),
       ].join("");
       return summary;
@@ -2063,7 +2063,7 @@ async function renderLiveSummary(job) {
     const largestType = typeSegments.reduce((best, item) => item.value > (best?.value || 0) ? item : best, null);
     const typeCenter = largestType ? percent(largestType.value / Math.max(typeTotal, 1)) : "0%";
     const typeSubline = largestType
-      ? `${largestType.label} leads | ${formatCount(typeTotal)} px typed`
+      ? `${largestType.label} leads typed regions`
       : "Typing breakdown not available yet";
     charts.innerHTML = [
       renderPieBlock(
@@ -2071,6 +2071,7 @@ async function renderLiveSummary(job) {
         totalSegments,
         contaminationPct,
         `${formatCount(summary.contaminated_pixels || 0)} px contaminated`,
+        { showLegend: false },
       ),
       renderPieBlock("Type breakdown", typeSegments, typeCenter, typeSubline),
     ].join("");
@@ -2096,7 +2097,8 @@ function liveSummaryMeta(summary) {
   return `${Number(summary.n_images || 0).toLocaleString()}/${Number(summary.n_images_total || 0).toLocaleString()} images | ${range} | ${source}`;
 }
 
-function renderPieBlock(title, segments, center, subline) {
+function renderPieBlock(title, segments, center, subline, options = {}) {
+  const showLegend = options.showLegend !== false;
   const total = segments.reduce((sum, segment) => sum + Math.max(0, Number(segment.value || 0)), 0);
   const legend = segments.length
     ? segments.map((segment) => renderLegendRow(segment, total)).join("")
@@ -2107,7 +2109,7 @@ function renderPieBlock(title, segments, center, subline) {
       <div class="live-chart-copy">
         <strong>${escapeHtml(title)}</strong>
         <span>${escapeHtml(subline)}</span>
-        <div class="live-legend">${legend}</div>
+        ${showLegend ? `<div class="live-legend">${legend}</div>` : ""}
       </div>
     </div>
   `;
