@@ -107,6 +107,9 @@ function setCryosparcGate(connected, details = {}) {
   if (!gate || !runForm) return;
   state.cryosparcConnected = Boolean(connected);
   window.cryoFilterCryosparcConnected = state.cryosparcConnected;
+  if (!state.cryosparcConnected) {
+    window.cryoFilterConnection = { connected: false, payload: {}, details: {} };
+  }
   gate.classList.toggle("is-locked", !connected);
   runForm.setAttribute("aria-hidden", connected ? "false" : "true");
   if (!connected) {
@@ -134,6 +137,34 @@ function syncCryosparcRunCredentials(payload) {
 }
 
 window.cryoFilterSyncCryosparcRunCredentials = syncCryosparcRunCredentials;
+
+function receiveCryosparcConnection(connection, details = null) {
+  const normalized = connection?.payload
+    ? connection
+    : { connected: true, payload: connection || {}, details: details || {} };
+  if (!normalized.connected) return false;
+  window.cryoFilterConnection = normalized;
+  window.cryoFilterCryosparcConnected = true;
+  syncCryosparcRunCredentials(normalized.payload || {});
+  setCryosparcGate(true, normalized.details || {});
+  return true;
+}
+
+function hasCryosparcConnection() {
+  if (state.cryosparcConnected) return true;
+  const connection = window.cryoFilterConnection;
+  if (connection?.connected) return receiveCryosparcConnection(connection);
+  if (window.cryoFilterCryosparcConnected) {
+    state.cryosparcConnected = true;
+    return true;
+  }
+  return false;
+}
+
+window.cryoFilterReceiveCryosparcConnection = receiveCryosparcConnection;
+window.addEventListener("cryoFilter:cryosparc-connected", (event) => {
+  receiveCryosparcConnection(event.detail);
+});
 
 async function connectCryosparc(form) {
   const payload = credentialPayload(form);
@@ -228,7 +259,7 @@ function setAnnotationLaunchStatus(message, tone = "") {
 }
 
 async function launchAnnotationSession(form, payload) {
-  if (payload.source_mode === "cryosparc" && !state.cryosparcConnected) {
+  if (payload.source_mode === "cryosparc" && !hasCryosparcConnection()) {
     resetCryosparcConnection();
     setCryosparcStatus("Connect to CryoSPARC before creating an annotation session.", "error");
     document.querySelector('[data-tab="cryosparc"]').click();
@@ -1899,7 +1930,7 @@ async function renderSelected() {
   const logEl = $("#jobLog");
   const artifacts = $("#artifactGrid");
   const metrics = $("#metricsGrid");
-  const liveSummary = $("#liveSummary");
+  const liveSummaryPanel = $("#liveSummary");
   if (!state.selected) {
     details.classList.add("empty");
     $("#selectedTitle").textContent = "No run selected";
@@ -1907,7 +1938,7 @@ async function renderSelected() {
     cancelButton.hidden = true;
     artifacts.hidden = true;
     metrics.hidden = true;
-    liveSummary.hidden = true;
+    liveSummaryPanel.hidden = true;
     logEl.hidden = true;
     logEl.textContent = "";
     artifacts.innerHTML = "";
@@ -1929,8 +1960,8 @@ async function renderSelected() {
     logEl.scrollTop = logEl.scrollHeight;
   }
   const artifactCount = await renderArtifacts();
-  const liveSummary = await renderLiveSummary(job);
-  renderMetrics(job, log.text || "", artifactCount, liveSummary);
+  const liveSummaryData = await renderLiveSummary(job);
+  renderMetrics(job, log.text || "", artifactCount, liveSummaryData);
 }
 
 async function renderArtifacts() {
@@ -2192,7 +2223,7 @@ async function launchJob(form) {
       (kind === "annotation" && payload.source_mode === "cryosparc") ||
       (kind === "train" && payload.mic_source_mode === "cryosparc")
     ) &&
-    !state.cryosparcConnected
+    !hasCryosparcConnection()
   ) {
     resetCryosparcConnection();
     setCryosparcStatus("Connect to CryoSPARC before launching.", "error");
@@ -2214,6 +2245,8 @@ function openPrimaryLaunchTab() {
 
 function bindTabs() {
   $$(".tab").forEach((tab) => {
+    if (tab.dataset.tabBound === "1") return;
+    tab.dataset.tabBound = "1";
     tab.addEventListener("click", () => {
       $$(".tab").forEach((item) => item.classList.remove("active"));
       $$(".panel").forEach((panel) => panel.classList.remove("active"));
@@ -2347,6 +2380,7 @@ async function boot() {
   bindTabs();
   bindForms();
   bindControls();
+  hasCryosparcConnection();
   setCryosparcStatus("Ready to connect.");
   updateAnnotationSourceFields();
   updateTrainingMicrographSourceFields();

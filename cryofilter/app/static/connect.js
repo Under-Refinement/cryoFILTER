@@ -1,6 +1,11 @@
 (function () {
   var busy = false;
   var credentialNames = ["cryosparc_base_url", "cryosparc_email", "cryosparc_password"];
+  window.cryoFilterConnection = window.cryoFilterConnection || {
+    connected: false,
+    payload: {},
+    details: {}
+  };
 
   function byId(id) {
     return document.getElementById(id);
@@ -93,6 +98,25 @@
     button.textContent = value ? "Checking..." : (window.cryoFilterCryosparcConnected ? "Reconnect" : "Connect");
   }
 
+  function publishConnection(payload, result) {
+    var connection = {
+      connected: true,
+      payload: payload,
+      details: result || {}
+    };
+    window.cryoFilterConnection = connection;
+    window.cryoFilterCryosparcConnected = true;
+    if (window.cryoFilterReceiveCryosparcConnection) {
+      window.cryoFilterReceiveCryosparcConnection(connection);
+    } else {
+      syncCredentials(payload);
+      setGateFallback(true, result);
+    }
+    if (window.CustomEvent && window.dispatchEvent) {
+      window.dispatchEvent(new CustomEvent("cryoFilter:cryosparc-connected", { detail: connection }));
+    }
+  }
+
   function connect(event) {
     if (event) {
       event.preventDefault();
@@ -111,19 +135,9 @@
       body: JSON.stringify(payload),
       credentials: "same-origin"
     }).then(function (result) {
-      window.cryoFilterCryosparcConnected = true;
-      if (window.cryoFilterSyncCryosparcRunCredentials) {
-        window.cryoFilterSyncCryosparcRunCredentials(payload);
-      } else {
-        syncCredentials(payload);
-      }
       var passwordField = field("cryosparc_password");
       if (passwordField) passwordField.value = "";
-      if (window.cryoFilterSetCryosparcGate) {
-        window.cryoFilterSetCryosparcGate(true, result);
-      } else {
-        setGateFallback(true, result);
-      }
+      publishConnection(payload, result);
       setStatus("Connected.", "ok");
       var projectField = document.querySelector("#cryosparcRunForm input[name='project']");
       if (projectField) projectField.focus();
@@ -135,9 +149,32 @@
     return false;
   }
 
+  function bindBasicTabs() {
+    var tabs = document.querySelectorAll(".tab[data-tab]");
+    for (var i = 0; i < tabs.length; i += 1) {
+      if (tabs[i].getAttribute("data-basic-tab-bound") === "1") continue;
+      tabs[i].setAttribute("data-basic-tab-bound", "1");
+      tabs[i].addEventListener("click", function () {
+        var targetId = this.getAttribute("data-tab");
+        var allTabs = document.querySelectorAll(".tab[data-tab]");
+        var panels = document.querySelectorAll(".panel");
+        for (var tabIndex = 0; tabIndex < allTabs.length; tabIndex += 1) {
+          allTabs[tabIndex].classList.remove("active");
+        }
+        for (var panelIndex = 0; panelIndex < panels.length; panelIndex += 1) {
+          panels[panelIndex].classList.remove("active");
+        }
+        this.classList.add("active");
+        var targetPanel = byId(targetId);
+        if (targetPanel) targetPanel.classList.add("active");
+      }, false);
+    }
+  }
+
   function bind() {
     var box = byId("cryosparcConnectForm");
     var button = byId("cryosparcConnectButton");
+    bindBasicTabs();
     if (!box || !button || box.getAttribute("data-connect-bound") === "1") return;
     box.setAttribute("data-connect-bound", "1");
     button.addEventListener("click", connect, true);

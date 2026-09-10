@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import socket
 import sys
 import threading
@@ -148,16 +149,37 @@ def test_cryosparc_connect_button_uses_isolated_handler() -> None:
     assert 'type="button"' in html
     assert 'data-credential-name="cryosparc_password"' in html
     assert 'autocomplete="new-password"' in html
-    assert "/static/connect.js?v=20260909-cryosparc-connect-isolated" in html
+    assert "/static/connect.js?v=20260909-cryosparc-state-sync" in html
     assert html.index("/static/connect.js") < html.index("/static/app.js")
     assert "onsubmit=" not in html
     assert "onclick=" not in html
     assert "/api/cryosparc/connect" in connect_script
     assert 'button.addEventListener("click", connect, true)' in connect_script
+    assert "window.cryoFilterConnection" in connect_script
+    assert "publishConnection(payload, result)" in connect_script
+    assert "function bindBasicTabs()" in connect_script
+    assert "data-basic-tab-bound" in connect_script
+    assert "function receiveCryosparcConnection" in script
+    assert "function hasCryosparcConnection" in script
+    assert 'kind === "cryosparc_predict" ||' in script
+    assert "!hasCryosparcConnection()" in script
     assert "window.cryoFilterSetCryosparcGate" in script
     assert "window.cryoFilterSyncCryosparcRunCredentials" in script
     assert ".cryosparc-gate.is-locked::before" in styles
     assert "pointer-events: none;" in styles
+
+
+def test_render_selected_has_no_duplicate_const_declarations() -> None:
+    script = (Path(__file__).resolve().parents[1] / "cryofilter" / "app" / "static" / "app.js").read_text(
+        encoding="utf-8"
+    )
+    render_selected = script.split("async function renderSelected()", maxsplit=1)[1].split(
+        "async function renderArtifacts()",
+        maxsplit=1,
+    )[0]
+    names = re.findall(r"\bconst\s+([A-Za-z_$][\w$]*)\b", render_selected)
+
+    assert len(names) == len(set(names))
 
 
 def test_infer_job_spec_builds_cli_command(tmp_path: Path) -> None:
