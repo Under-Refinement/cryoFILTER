@@ -330,6 +330,8 @@ def run_local_typing(
     expected_images: int | None = None,
     timeout: float | None = None,
     env_overrides: Mapping[str, str] | None = None,
+    poll_callback: Callable[[], None] | None = None,
+    poll_interval: float = 5.0,
 ) -> list[str]:
     """Run cryoFILTER contamination typing on inference masks."""
 
@@ -352,16 +354,49 @@ def run_local_typing(
     if expected_images is not None:
         command.extend(["--expected-images", str(int(expected_images))])
     print(
-        "Running contamination typing; 4-panel OTF images will refresh after typing finishes.",
+        "Running contamination typing; 4-panel OTF images will refresh as typing outputs are written.",
         flush=True,
     )
     print("Executing:", " ".join(shlex.quote(part) for part in command), flush=True)
     env = os.environ.copy()
     if env_overrides:
         env.update({str(key): str(value) for key, value in env_overrides.items()})
-    completed = subprocess.run(command, timeout=timeout, env=env)
-    if completed.returncode != 0:
-        raise subprocess.CalledProcessError(completed.returncode, command)
+    if poll_callback is None:
+        completed = subprocess.run(command, timeout=timeout, env=env)
+        if completed.returncode != 0:
+            raise subprocess.CalledProcessError(completed.returncode, command)
+        return command
+
+    process = subprocess.Popen(command, env=env)
+    deadline = None if timeout is None else time.monotonic() + float(timeout)
+    last_poll = 0.0
+    try:
+        while True:
+            returncode = process.poll()
+            now = time.monotonic()
+            if now - last_poll >= max(0.5, float(poll_interval)):
+                try:
+                    poll_callback()
+                except Exception as exc:
+                    print(f"Warning: live typed OTF refresh skipped: {type(exc).__name__}: {exc}", flush=True)
+                last_poll = now
+            if returncode is not None:
+                break
+            if deadline is not None and now >= deadline:
+                process.kill()
+                process.wait()
+                raise subprocess.TimeoutExpired(command, timeout)
+            time.sleep(0.5)
+    except BaseException:
+        if process.poll() is None:
+            process.terminate()
+        raise
+    if process.returncode != 0:
+        raise subprocess.CalledProcessError(process.returncode, command)
+    try:
+        poll_callback()
+    except Exception as exc:
+        print(f"Warning: final live typed OTF refresh skipped: {type(exc).__name__}: {exc}", flush=True)
     return command
 
 

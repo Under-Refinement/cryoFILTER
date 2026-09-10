@@ -1613,6 +1613,7 @@ class _LiveTypingUpdater:
         self.typing_timeout = typing_timeout
         self.resource_env = resource_env
         self.last_images = 0
+        self.last_refreshed_images = 0
         self.last_attempt = 0.0
         try:
             self.min_interval_seconds = max(
@@ -1621,6 +1622,23 @@ class _LiveTypingUpdater:
             )
         except ValueError:
             self.min_interval_seconds = 20.0
+
+    def _refresh_available_otfs(self) -> int:
+        typing_summary_path = self.local_typing_dir / "summary.json"
+        refresh = _refresh_typed_particle_overlays(
+            local_manifest_file=self.local_manifest_file,
+            local_transfer_dir=self.local_transfer_dir,
+            local_inference_dir=self.local_inference_dir,
+            inference_summary_file=self.inference_summary_file,
+            typing_summary_path=typing_summary_path,
+            particle_exclusion_distance_angstrom=self.particle_exclusion_distance_angstrom,
+            create_if_missing=True,
+        )
+        refreshed = int(refresh.get("refreshed") or 0)
+        if refreshed > self.last_refreshed_images:
+            self.last_refreshed_images = refreshed
+            print(f"Live typed OTF refresh: {refreshed} four-panel image(s) available.", flush=True)
+        return refreshed
 
     def __call__(self) -> None:
         now = time.monotonic()
@@ -1640,7 +1658,12 @@ class _LiveTypingUpdater:
                 return
             raise
         images = int(typing_manifest.get("images") or 0)
-        if images <= 0 or images <= self.last_images:
+        if images <= 0:
+            return
+        if images <= self.last_images:
+            if self.last_refreshed_images < images:
+                self.last_attempt = now
+                self._refresh_available_otfs()
             return
         self.last_attempt = now
         self.last_images = images
@@ -1657,20 +1680,10 @@ class _LiveTypingUpdater:
             expected_images=self.expected_images or images,
             timeout=self.typing_timeout,
             env_overrides=self.resource_env,
+            poll_callback=self._refresh_available_otfs,
+            poll_interval=5.0,
         )
-        typing_summary_path = self.local_typing_dir / "summary.json"
-        refresh = _refresh_typed_particle_overlays(
-            local_manifest_file=self.local_manifest_file,
-            local_transfer_dir=self.local_transfer_dir,
-            local_inference_dir=self.local_inference_dir,
-            inference_summary_file=self.inference_summary_file,
-            typing_summary_path=typing_summary_path,
-            particle_exclusion_distance_angstrom=self.particle_exclusion_distance_angstrom,
-            create_if_missing=True,
-        )
-        refreshed = int(refresh.get("refreshed") or 0)
-        if refreshed > 0:
-            print(f"Live typed OTF refresh: {refreshed} four-panel image(s) available.", flush=True)
+        self._refresh_available_otfs()
 
 
 def _resolve_existing_inference_paths(

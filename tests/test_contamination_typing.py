@@ -5,6 +5,7 @@ import mrcfile
 import numpy as np
 import pandas as pd
 
+from cryofilter import typing_cli
 from cryofilter.typing_cli import main as typing_main
 from utils.contamination_typing import assign_frequency_component_type, categorize_contamination_type
 
@@ -202,3 +203,37 @@ def test_public_typing_uses_required_names_and_handles_clean_images(
     assert "Crystalline:" in stdout
     assert "Aggregate:" in stdout
     assert "Ethane:" in stdout
+
+
+def test_typing_live_summary_has_typed_mask_ready(tmp_path: Path, monkeypatch) -> None:
+    mic = tmp_path / "mic.mrc"
+    _write_typing_mrc(mic)
+    mask = np.zeros((100, 100), dtype=np.uint8)
+    mask[48:52, 48:52] = 1
+    mask_path = tmp_path / "mic_mask.npy"
+    np.save(mask_path, mask)
+    manifest = tmp_path / "manifest.csv"
+    pd.DataFrame(
+        [
+            {
+                "dataset_id": "demo",
+                "stem": "mic",
+                "micrograph_path": mic,
+                "binary_mask_path": mask_path,
+                "pixel_size_angstrom": 2.0,
+            },
+        ]
+    ).to_csv(manifest, index=False)
+    output_dir = tmp_path / "typing"
+    original_write_summary = typing_cli._write_summary_outputs
+
+    def assert_mask_before_summary(**kwargs):
+        if kwargs["status"] == "running":
+            typed_path = output_dir / "typed_masks" / "demo__mic_typed_mask.npy"
+            assert typed_path.exists()
+            assert set(np.unique(np.load(typed_path))) == {0, 4}
+        return original_write_summary(**kwargs)
+
+    monkeypatch.setattr(typing_cli, "_write_summary_outputs", assert_mask_before_summary)
+
+    assert typing_main(["--manifest", str(manifest), "--output-dir", str(output_dir)]) == 0

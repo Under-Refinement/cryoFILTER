@@ -1084,6 +1084,7 @@ def test_live_typing_updater_runs_partial_typing_and_refreshes(tmp_path: Path, m
 
     assert captured["typing"]["expected_images"] == 2
     assert captured["typing"]["env_overrides"] == {"OMP_NUM_THREADS": "8"}
+    assert callable(captured["typing"]["poll_callback"])
     assert captured["refresh"]["typing_summary_path"] == typing_dir / "summary.json"
     with (local_run_dir / "contamination_typing_manifest.csv").open(encoding="utf-8", newline="") as handle:
         rows = list(csv.DictReader(handle))

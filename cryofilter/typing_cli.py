@@ -560,6 +560,34 @@ def _write_summary_outputs(
     return image_summary_df, dataset_summary_df, overall_summary
 
 
+def _save_npy_atomic(path: Path, array: np.ndarray) -> None:
+    tmp_path = path.with_name(f".{path.stem}.tmp.{os.getpid()}{path.suffix}")
+    np.save(tmp_path, array)
+    tmp_path.replace(path)
+
+
+def _write_typed_masks_for_rows(
+    *,
+    typed_mask_dir: Path,
+    manifest_dir: Path,
+    component_df: pd.DataFrame,
+    manifest_rows: Sequence[pd.Series],
+) -> int:
+    written = 0
+    for row in manifest_rows:
+        dataset_id = str(row["dataset_id"])
+        stem = str(row["stem"])
+        image_id = f"{dataset_id}__{stem}"
+        mask_col = _first_existing_column(row, MASK_PATH_COLUMNS)
+        if mask_col is None:
+            continue
+        mask = _load_mask(_resolve_path(manifest_dir, row[mask_col]))
+        typed = _typed_mask_for_image(mask, component_df.loc[component_df["image_id"] == image_id].copy())
+        _save_npy_atomic(typed_mask_dir / f"{image_id}_typed_mask.npy", typed.astype(np.uint8))
+        written += 1
+    return written
+
+
 def run(args: argparse.Namespace) -> int:
     manifest_path = args.manifest.expanduser().resolve()
     output_dir = args.output_dir.expanduser().resolve()
@@ -693,6 +721,12 @@ def run(args: argparse.Namespace) -> int:
         row_with_geometry["_contaminated_pixels"] = int(total_contam_pixels)
         manifest_rows.append(row_with_geometry)
         partial_component_df = _component_summary_df(component_rows)
+        _write_typed_masks_for_rows(
+            typed_mask_dir=typed_mask_dir,
+            manifest_dir=manifest_dir,
+            component_df=partial_component_df,
+            manifest_rows=manifest_rows,
+        )
         _write_summary_outputs(
             output_dir=output_dir,
             bands_json=bands_json,
@@ -707,6 +741,12 @@ def run(args: argparse.Namespace) -> int:
     component_df = _component_summary_df(component_rows)
     component_csv = output_dir / "component_type_assignments.csv"
     _write_csv_atomic(component_df, component_csv)
+    _write_typed_masks_for_rows(
+        typed_mask_dir=typed_mask_dir,
+        manifest_dir=manifest_dir,
+        component_df=component_df,
+        manifest_rows=[row for _, row in manifest_df.iterrows()],
+    )
     image_summary_df, dataset_summary_df, overall_summary = _write_summary_outputs(
         output_dir=output_dir,
         bands_json=bands_json,
@@ -716,14 +756,6 @@ def run(args: argparse.Namespace) -> int:
         expected_images=expected_images,
         status="complete",
     )
-
-    for key, row in manifest_df.groupby(["dataset_id", "stem"], sort=True):
-        dataset_id, stem = key
-        image_id = f"{dataset_id}__{stem}"
-        mask_col = _first_existing_column(row.iloc[0], MASK_PATH_COLUMNS)
-        mask = _load_mask(_resolve_path(manifest_dir, row.iloc[0][mask_col]))
-        typed = _typed_mask_for_image(mask, component_df.loc[component_df["image_id"] == image_id].copy())
-        np.save(typed_mask_dir / f"{image_id}_typed_mask.npy", typed.astype(np.uint8))
 
     _print_overall_summary(overall_summary)
     print(f"Wrote component table: {component_csv}")
