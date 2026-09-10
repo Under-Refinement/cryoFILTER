@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
-    <link rel="stylesheet" href="/static/styles.css?v=20260909-cryosparc-connect-restore" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260909-cryosparc-connect-isolated" />
   </head>
   <body>
     <div class="shell">
@@ -208,19 +208,19 @@
                 </details>
               </form>
             </div>
-            <form id="cryosparcConnectForm" class="credential-card" autocomplete="on">
+            <div id="cryosparcConnectForm" class="credential-card" role="group" aria-labelledby="cryosparcCredentialTitle">
               <div class="credential-head">
-                <h2>CryoSPARC</h2>
+                <h2 id="cryosparcCredentialTitle">CryoSPARC</h2>
                 <p id="cryosparcCredentialHint">Connect to continue.</p>
               </div>
-              <label><span class="label-row">Instance URL <span class="help" tabindex="0" data-tip="CryoSPARC URL from your browser, for example http://cryosparc.example.edu:39000. A browse/workspace URL is okay; cryoFILTER uses the server part.">?</span></span><input name="cryosparc_base_url" required placeholder="http://cryosparc.example.edu:39000" /></label>
-              <label><span class="label-row">Username/email <span class="help" tabindex="0" data-tip="CryoSPARC login name or email. Leave blank only when your environment or config already provides it.">?</span></span><input name="cryosparc_email" autocomplete="username" placeholder="user@example.edu" /></label>
-              <label><span class="label-row">Password <span class="help" tabindex="0" data-tip="CryoSPARC password. It is checked once and then passed to launched jobs without being saved in app state.">?</span></span><input name="cryosparc_password" type="password" autocomplete="current-password" /></label>
+              <label><span class="label-row">Instance URL <span class="help" tabindex="0" data-tip="CryoSPARC URL from your browser, for example http://cryosparc.example.edu:39000. A browse/workspace URL is okay; cryoFILTER uses the server part.">?</span></span><input data-credential-name="cryosparc_base_url" autocomplete="off" inputmode="url" placeholder="http://cryosparc.example.edu:39000" /></label>
+              <label><span class="label-row">Username/email <span class="help" tabindex="0" data-tip="CryoSPARC login name or email. Leave blank only when your environment or config already provides it.">?</span></span><input data-credential-name="cryosparc_email" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="user@example.edu" /></label>
+              <label><span class="label-row">Password <span class="help" tabindex="0" data-tip="CryoSPARC password. It is checked once and then passed to launched jobs without being saved in app state.">?</span></span><input data-credential-name="cryosparc_password" type="password" autocomplete="new-password" /></label>
               <div class="credential-actions">
-                <button id="cryosparcConnectButton" class="primary" type="submit">Connect</button>
+                <button id="cryosparcConnectButton" class="primary" type="button">Connect</button>
               </div>
               <p id="cryosparcConnectStatus" class="credential-status" role="status" aria-live="polite"></p>
-            </form>
+            </div>
           </div>
         </section>
 
@@ -357,6 +357,7 @@
         </section>
       </main>
     </div>
-    <script src="/static/app.js?v=20260909-cryosparc-connect-restore"></script>
+    <script src="/static/connect.js?v=20260909-cryosparc-connect-isolated"></script>
+    <script src="/static/app.js?v=20260909-cryosparc-connect-isolated"></script>
   </body>
 </html>
