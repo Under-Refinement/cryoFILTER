@@ -11,6 +11,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import Any, Sequence
 from uuid import UUID, uuid4
@@ -1188,6 +1189,118 @@ def _inference_summary_rows_by_stem(inference_summary: dict[str, Any]) -> dict[s
     return rows
 
 
+def _live_inference_summary_from_workers(
+    *,
+    local_manifest_file: Path,
+    local_transfer_dir: Path,
+    local_inference_dir: Path,
+) -> dict[str, Any] | None:
+    worker_paths = sorted(local_inference_dir.glob(".cryofilter_worker_*_summary.json"))
+    if not worker_paths:
+        return None
+
+    worker_summaries: list[dict[str, Any]] = []
+    for path in worker_paths:
+        try:
+            payload = _load_json_object(path)
+        except Exception:
+            continue
+        if isinstance(payload.get("inputs"), list) and payload.get("inputs"):
+            worker_summaries.append(payload)
+    if not worker_summaries:
+        return None
+
+    manifest = predict_helpers.load_transfer_manifest(local_manifest_file)
+    micrographs = manifest.get("micrographs")
+    order_by_stem: dict[str, int] = {}
+    if isinstance(micrographs, list):
+        for index, entry in enumerate(micrographs):
+            if not isinstance(entry, dict):
+                continue
+            order_by_stem[predict_helpers._manifest_micrograph_path(local_transfer_dir, entry).stem] = index
+
+    rows_by_stem: dict[str, dict[str, Any]] = {}
+    overlays: list[dict[str, Any]] = []
+    for summary in worker_summaries:
+        overlay = summary.get("particle_overlay_rendering")
+        if isinstance(overlay, dict) and overlay.get("enabled"):
+            overlays.append(overlay)
+        for row in summary.get("inputs", []):
+            if not isinstance(row, dict) or not row.get("input_mrc"):
+                continue
+            rows_by_stem[Path(str(row["input_mrc"])).stem] = dict(row)
+    if not rows_by_stem:
+        return None
+
+    ordered_rows = sorted(
+        rows_by_stem.values(),
+        key=lambda row: order_by_stem.get(Path(str(row.get("input_mrc") or "")).stem, len(order_by_stem)),
+    )
+    live_summary = dict(worker_summaries[0])
+    live_summary["inputs"] = ordered_rows
+    if order_by_stem:
+        live_summary["n_images_expected"] = int(len(order_by_stem))
+    if overlays:
+        merged_overlay = dict(overlays[0])
+        frames_by_key: dict[str, dict[str, Any]] = {}
+        for overlay in overlays:
+            for frame in overlay.get("frames", []):
+                if not isinstance(frame, dict):
+                    continue
+                key = str(frame.get("output_png") or frame.get("micrograph") or "")
+                if key:
+                    frames_by_key[key] = dict(frame)
+        ordered_frames: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for row in ordered_rows:
+            particle_overlay = row.get("particle_overlay")
+            if not isinstance(particle_overlay, dict):
+                continue
+            frame = {"micrograph": row.get("input_mrc"), **particle_overlay}
+            key = str(frame.get("output_png") or frame.get("micrograph") or "")
+            if not key or key in seen:
+                continue
+            ordered_frames.append({**frames_by_key.get(key, {}), **frame})
+            seen.add(key)
+        for key, frame in frames_by_key.items():
+            if key not in seen:
+                ordered_frames.append(frame)
+        merged_overlay["frames"] = ordered_frames
+        live_summary["particle_overlay_rendering"] = merged_overlay
+    return live_summary
+
+
+def _load_inference_summary_for_typed_overlays(
+    *,
+    local_manifest_file: Path,
+    local_transfer_dir: Path,
+    local_inference_dir: Path,
+    inference_summary_file: Path,
+) -> dict[str, Any] | None:
+    file_summary: dict[str, Any] | None = None
+    if inference_summary_file.exists():
+        try:
+            file_summary = _load_json_object(inference_summary_file)
+        except Exception:
+            pass
+    worker_summary = _live_inference_summary_from_workers(
+        local_manifest_file=local_manifest_file,
+        local_transfer_dir=local_transfer_dir,
+        local_inference_dir=local_inference_dir,
+    )
+    if worker_summary is None:
+        return file_summary
+    if file_summary is None:
+        return worker_summary
+    file_rows = file_summary.get("inputs")
+    worker_rows = worker_summary.get("inputs")
+    if isinstance(worker_rows, list) and (
+        not isinstance(file_rows, list) or len(worker_rows) > len(file_rows)
+    ):
+        return worker_summary
+    return file_summary
+
+
 def _refresh_typed_particle_overlays(
     *,
     local_manifest_file: Path,
@@ -1198,7 +1311,7 @@ def _refresh_typed_particle_overlays(
     particle_exclusion_distance_angstrom: float,
     create_if_missing: bool = False,
 ) -> dict[str, Any]:
-    if typing_summary_path is None or not typing_summary_path.exists() or not inference_summary_file.exists():
+    if typing_summary_path is None or not typing_summary_path.exists():
         return {"enabled": False, "refreshed": 0, "reason": "missing typing or inference summary"}
 
     import numpy as np
@@ -1206,7 +1319,14 @@ def _refresh_typed_particle_overlays(
     from cryofilter.particle_filtering import classify_particle_coordinates_by_mask
     from cryofilter.qc_render import render_particle_overlay_png
 
-    inference_summary = _load_json_object(inference_summary_file)
+    inference_summary = _load_inference_summary_for_typed_overlays(
+        local_manifest_file=local_manifest_file,
+        local_transfer_dir=local_transfer_dir,
+        local_inference_dir=local_inference_dir,
+        inference_summary_file=inference_summary_file,
+    )
+    if inference_summary is None:
+        return {"enabled": False, "refreshed": 0, "reason": "missing typing or inference summary"}
     overlay = inference_summary.get("particle_overlay_rendering")
     if not isinstance(overlay, dict) or not overlay.get("enabled"):
         if not create_if_missing:
@@ -1457,6 +1577,102 @@ def _validate_typing_options(args: argparse.Namespace) -> None:
         raise ValueError("--typing-pixel-size-angstrom must be positive")
 
 
+class _LiveTypingUpdater:
+    def __init__(
+        self,
+        *,
+        local_manifest_file: Path,
+        local_transfer_dir: Path,
+        local_inference_dir: Path,
+        inference_summary_file: Path,
+        local_run_dir: Path,
+        local_typing_dir: Path,
+        project_uid: str,
+        workspace_uid: str,
+        particle_exclusion_distance_angstrom: float,
+        typing_normalization_method: str | None,
+        typing_min_component_area_px: int | None,
+        typing_pixel_size_angstrom: float | None,
+        typing_timeout: float | None,
+        resource_env: dict[str, str] | None,
+    ) -> None:
+        manifest = predict_helpers.load_transfer_manifest(local_manifest_file)
+        micrographs = manifest.get("micrographs")
+        self.expected_images = len(micrographs) if isinstance(micrographs, list) else 0
+        self.local_manifest_file = local_manifest_file
+        self.local_transfer_dir = local_transfer_dir
+        self.local_inference_dir = local_inference_dir
+        self.inference_summary_file = inference_summary_file
+        self.typing_manifest_file = local_run_dir / "contamination_typing_manifest.csv"
+        self.local_typing_dir = local_typing_dir
+        self.dataset_id = f"{project_uid}_{workspace_uid}"
+        self.particle_exclusion_distance_angstrom = float(particle_exclusion_distance_angstrom)
+        self.typing_normalization_method = typing_normalization_method
+        self.typing_min_component_area_px = typing_min_component_area_px
+        self.typing_pixel_size_angstrom = typing_pixel_size_angstrom
+        self.typing_timeout = typing_timeout
+        self.resource_env = resource_env
+        self.last_images = 0
+        self.last_attempt = 0.0
+        try:
+            self.min_interval_seconds = max(
+                5.0,
+                float(os.environ.get("CRYOFILTER_LIVE_TYPING_INTERVAL_SECONDS", "20")),
+            )
+        except ValueError:
+            self.min_interval_seconds = 20.0
+
+    def __call__(self) -> None:
+        now = time.monotonic()
+        if self.last_attempt and now - self.last_attempt < self.min_interval_seconds:
+            return
+        try:
+            typing_manifest = predict_helpers.write_typing_manifest_from_transfer(
+                transfer_manifest_file=self.local_manifest_file,
+                local_transfer_dir=self.local_transfer_dir,
+                inference_dir=self.local_inference_dir,
+                manifest_path=self.typing_manifest_file,
+                dataset_id=self.dataset_id,
+                require_all_masks=False,
+            )
+        except ValueError as exc:
+            if "No rows were written" in str(exc):
+                return
+            raise
+        images = int(typing_manifest.get("images") or 0)
+        if images <= 0 or images <= self.last_images:
+            return
+        self.last_attempt = now
+        self.last_images = images
+        print(
+            f"Live typing update: {images}/{self.expected_images or images} completed mask(s) ready.",
+            flush=True,
+        )
+        predict_helpers.run_local_typing(
+            manifest_path=self.typing_manifest_file,
+            output_dir=self.local_typing_dir,
+            normalization_method=self.typing_normalization_method,
+            min_component_area_px=self.typing_min_component_area_px,
+            pixel_size_angstrom=self.typing_pixel_size_angstrom,
+            expected_images=self.expected_images or images,
+            timeout=self.typing_timeout,
+            env_overrides=self.resource_env,
+        )
+        typing_summary_path = self.local_typing_dir / "summary.json"
+        refresh = _refresh_typed_particle_overlays(
+            local_manifest_file=self.local_manifest_file,
+            local_transfer_dir=self.local_transfer_dir,
+            local_inference_dir=self.local_inference_dir,
+            inference_summary_file=self.inference_summary_file,
+            typing_summary_path=typing_summary_path,
+            particle_exclusion_distance_angstrom=self.particle_exclusion_distance_angstrom,
+            create_if_missing=True,
+        )
+        refreshed = int(refresh.get("refreshed") or 0)
+        if refreshed > 0:
+            print(f"Live typed OTF refresh: {refreshed} four-panel image(s) available.", flush=True)
+
+
 def _resolve_existing_inference_paths(
     *,
     local_run_dir: Path,
@@ -1550,6 +1766,7 @@ def _finalize_local_run_outputs(
             normalization_method=typing_normalization_method,
             min_component_area_px=typing_min_component_area_px,
             pixel_size_angstrom=typing_pixel_size_angstrom,
+            expected_images=int(typing_manifest.get("images_expected") or typing_manifest.get("images") or 0),
             timeout=typing_timeout,
             env_overrides=resource_env,
         )
@@ -1915,6 +2132,24 @@ def _run_predict(args: argparse.Namespace, config: CryoSPARCIntegrationConfig) -
         payload["particle_star"] = star_info
 
         infer_args = list(getattr(args, "infer_args", []) or [])
+        live_typing_callback = None
+        if run_typing and typing_summary_path is None:
+            live_typing_callback = _LiveTypingUpdater(
+                local_manifest_file=local_manifest_file,
+                local_transfer_dir=local_transfer_dir,
+                local_inference_dir=local_inference_dir,
+                inference_summary_file=local_inference_dir / "inference_summary.json",
+                local_run_dir=local_run_dir,
+                local_typing_dir=local_typing_dir,
+                project_uid=project_uid,
+                workspace_uid=workspace_uid,
+                particle_exclusion_distance_angstrom=float(args.particle_exclusion_distance_angstrom),
+                typing_normalization_method=getattr(args, "typing_normalization_method", None),
+                typing_min_component_area_px=getattr(args, "typing_min_component_area_px", None),
+                typing_pixel_size_angstrom=getattr(args, "typing_pixel_size_angstrom", None),
+                typing_timeout=getattr(args, "typing_timeout", None),
+                resource_env=resource_env,
+            )
         inference_command = predict_helpers.run_local_inference(
             input_dir=local_transfer_dir / "micrographs",
             output_dir=local_inference_dir,
@@ -1928,6 +2163,8 @@ def _run_predict(args: argparse.Namespace, config: CryoSPARCIntegrationConfig) -
             num_cpus=getattr(args, "num_cpus", None),
             num_gpus=getattr(args, "num_gpus", None),
             render_particle_overlays=True,
+            poll_callback=live_typing_callback,
+            poll_interval=5.0,
         )
         payload["inference_command"] = inference_command
 

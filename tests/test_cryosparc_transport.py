@@ -856,6 +856,69 @@ def test_write_typing_manifest_from_transfer_pairs_micrographs_and_masks(tmp_pat
     assert rows[0]["pixel_size_angstrom"] == "1.5"
 
 
+def test_write_typing_manifest_from_transfer_allows_live_partial_masks(tmp_path: Path) -> None:
+    transfer = tmp_path / "transfer"
+    (transfer / "micrographs").mkdir(parents=True)
+    inference = tmp_path / "inference"
+    inference.mkdir()
+    np.save(inference / "ready_mask.npy", np.zeros((4, 4), dtype=np.uint8))
+    manifest_path = tmp_path / "transfer_manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "protocol_version": 1,
+                "run_id": "00000000-0000-0000-0000-000000000021",
+                "project_uid": "P1",
+                "workspace_uid": "W2",
+                "external_job_uid": "J9",
+                "micrographs": [
+                    {
+                        "uid": 7,
+                        "transfer_filename": "micrographs/ready.mrc",
+                        "shape_yx": [4, 4],
+                        "pixel_size_angstrom": 1.5,
+                    },
+                    {
+                        "uid": 8,
+                        "transfer_filename": "micrographs/waiting.mrc",
+                        "shape_yx": [4, 4],
+                        "pixel_size_angstrom": 1.5,
+                    },
+                ],
+                "particles": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(FileNotFoundError):
+        predict_helpers.write_typing_manifest_from_transfer(
+            transfer_manifest_file=manifest_path,
+            local_transfer_dir=transfer,
+            inference_dir=inference,
+            manifest_path=tmp_path / "strict.csv",
+            dataset_id="P1_W2",
+        )
+
+    output_csv = tmp_path / "partial.csv"
+    info = predict_helpers.write_typing_manifest_from_transfer(
+        transfer_manifest_file=manifest_path,
+        local_transfer_dir=transfer,
+        inference_dir=inference,
+        manifest_path=output_csv,
+        dataset_id="P1_W2",
+        require_all_masks=False,
+    )
+
+    assert info["images"] == 1
+    assert info["images_expected"] == 2
+    assert info["missing_masks"] == 1
+    assert info["complete"] is False
+    with output_csv.open(encoding="utf-8", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    assert [row["stem"] for row in rows] == ["ready"]
+
+
 def test_cryosparc_helpers_find_internal_masks_when_exports_are_disabled(tmp_path: Path) -> None:
     run_id = "00000000-0000-0000-0000-000000000014"
     transfer = tmp_path / "transfer"
@@ -932,6 +995,7 @@ def test_run_local_typing_builds_command(monkeypatch: pytest.MonkeyPatch, tmp_pa
         normalization_method="percentile_extra_wide",
         min_component_area_px=75,
         pixel_size_angstrom=1.35,
+        expected_images=60,
         timeout=12.0,
         env_overrides={"OMP_NUM_THREADS": "8"},
     )
@@ -940,9 +1004,90 @@ def test_run_local_typing_builds_command(monkeypatch: pytest.MonkeyPatch, tmp_pa
     assert "--manifest" in command
     assert "--output-dir" in command
     assert "--min-component-area-px" in command
+    assert "--expected-images" in command
+    assert command[command.index("--expected-images") + 1] == "60"
     assert calls[0][0] == command
     assert calls[0][1]["timeout"] == 12.0
     assert calls[0][1]["env"]["OMP_NUM_THREADS"] == "8"
+
+
+def test_live_typing_updater_runs_partial_typing_and_refreshes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    local_run_dir = tmp_path / "run"
+    transfer = local_run_dir / "transfer"
+    inference = local_run_dir / "inference"
+    typing_dir = local_run_dir / "typing"
+    (transfer / "micrographs").mkdir(parents=True)
+    inference.mkdir(parents=True)
+    np.save(inference / "ready_mask.npy", np.zeros((4, 4), dtype=np.uint8))
+    manifest_path = local_run_dir / "transfer_manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "protocol_version": 1,
+                "run_id": "00000000-0000-0000-0000-000000000022",
+                "project_uid": "P1",
+                "workspace_uid": "W2",
+                "external_job_uid": "J9",
+                "micrographs": [
+                    {
+                        "uid": 7,
+                        "transfer_filename": "micrographs/ready.mrc",
+                        "shape_yx": [4, 4],
+                        "pixel_size_angstrom": 1.5,
+                    },
+                    {
+                        "uid": 8,
+                        "transfer_filename": "micrographs/waiting.mrc",
+                        "shape_yx": [4, 4],
+                        "pixel_size_angstrom": 1.5,
+                    },
+                ],
+                "particles": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    captured: dict[str, object] = {}
+
+    def fake_run_local_typing(**kwargs):
+        captured["typing"] = kwargs
+        Path(kwargs["output_dir"]).mkdir(parents=True, exist_ok=True)
+        (Path(kwargs["output_dir"]) / "summary.json").write_text("{}", encoding="utf-8")
+        return ["typing"]
+
+    def fake_refresh(**kwargs):
+        captured["refresh"] = kwargs
+        return {"enabled": True, "refreshed": 1}
+
+    monkeypatch.setattr(predict_helpers, "run_local_typing", fake_run_local_typing)
+    monkeypatch.setattr(remote_cli, "_refresh_typed_particle_overlays", fake_refresh)
+    monkeypatch.setenv("CRYOFILTER_LIVE_TYPING_INTERVAL_SECONDS", "5")
+
+    updater = remote_cli._LiveTypingUpdater(
+        local_manifest_file=manifest_path,
+        local_transfer_dir=transfer,
+        local_inference_dir=inference,
+        inference_summary_file=inference / "inference_summary.json",
+        local_run_dir=local_run_dir,
+        local_typing_dir=typing_dir,
+        project_uid="P1",
+        workspace_uid="W2",
+        particle_exclusion_distance_angstrom=100.0,
+        typing_normalization_method=None,
+        typing_min_component_area_px=None,
+        typing_pixel_size_angstrom=None,
+        typing_timeout=None,
+        resource_env={"OMP_NUM_THREADS": "8"},
+    )
+
+    updater()
+
+    assert captured["typing"]["expected_images"] == 2
+    assert captured["typing"]["env_overrides"] == {"OMP_NUM_THREADS": "8"}
+    assert captured["refresh"]["typing_summary_path"] == typing_dir / "summary.json"
+    with (local_run_dir / "contamination_typing_manifest.csv").open(encoding="utf-8", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    assert [row["stem"] for row in rows] == ["ready"]
 
 
 def test_refresh_typed_particle_overlays_writes_four_panel_png(tmp_path: Path) -> None:

@@ -93,6 +93,12 @@ def _add_type_arguments(ap: argparse.ArgumentParser) -> None:
         default=50,
         help="Components smaller than this are assigned to Ethane by default.",
     )
+    ap.add_argument(
+        "--expected-images",
+        type=int,
+        default=None,
+        help="Expected full image count for live progress summaries.",
+    )
     ap.add_argument("--crop-pad-px", type=int, default=16, help="Padding around each component crop before PSD extraction.")
     ap.add_argument("--min-crop-size-px", type=int, default=128, help="Minimum PSD crop size.")
     ap.add_argument("--max-psd-crop-size-px", type=int, default=768, help="Maximum PSD crop size before downsampling.")
@@ -567,6 +573,11 @@ def run(args: argparse.Namespace) -> int:
     frequency_bands = _load_bands(bands_json)
 
     manifest_df = pd.read_csv(manifest_path).reset_index(drop=True)
+    expected_images = (
+        int(args.expected_images)
+        if args.expected_images is not None and int(args.expected_images) > 0
+        else int(len(manifest_df))
+    )
     if "dataset_id" not in manifest_df.columns or "stem" not in manifest_df.columns:
         raise ValueError("Manifest must contain dataset_id and stem columns.")
 
@@ -688,10 +699,10 @@ def run(args: argparse.Namespace) -> int:
             args=args,
             component_df=partial_component_df,
             manifest_rows=manifest_rows,
-            expected_images=int(len(manifest_df)),
+            expected_images=expected_images,
             status="running",
         )
-        print(f"Typed {len(manifest_rows)}/{len(manifest_df)} image(s); live summary updated.", flush=True)
+        print(f"Typed {len(manifest_rows)}/{expected_images} image(s); live summary updated.", flush=True)
 
     component_df = _component_summary_df(component_rows)
     component_csv = output_dir / "component_type_assignments.csv"
@@ -702,7 +713,7 @@ def run(args: argparse.Namespace) -> int:
         args=args,
         component_df=component_df,
         manifest_rows=manifest_rows,
-        expected_images=int(len(manifest_df)),
+        expected_images=expected_images,
         status="complete",
     )
 

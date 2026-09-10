@@ -8,8 +8,9 @@ import os
 import shlex
 import subprocess
 import sys
+import time
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from cryofilter.cryosparc import PROTOCOL_VERSION
 from cryofilter.cryosparc.protocol.validation import validate_uid_partition
@@ -170,6 +171,8 @@ def run_local_inference(
     num_cpus: int | None = None,
     num_gpus: int | None = None,
     render_particle_overlays: bool = True,
+    poll_callback: Callable[[], None] | None = None,
+    poll_interval: float = 5.0,
 ) -> list[str]:
     """Run cryoFILTER inference, optionally deferring OTF overlays until typing finishes."""
 
@@ -208,9 +211,42 @@ def run_local_inference(
     env = os.environ.copy()
     if env_overrides:
         env.update({str(key): str(value) for key, value in env_overrides.items()})
-    completed = subprocess.run(command, timeout=timeout, env=env)
-    if completed.returncode != 0:
-        raise subprocess.CalledProcessError(completed.returncode, command)
+    if poll_callback is None:
+        completed = subprocess.run(command, timeout=timeout, env=env)
+        if completed.returncode != 0:
+            raise subprocess.CalledProcessError(completed.returncode, command)
+        return command
+
+    process = subprocess.Popen(command, env=env)
+    deadline = None if timeout is None else time.monotonic() + float(timeout)
+    last_poll = 0.0
+    try:
+        while True:
+            returncode = process.poll()
+            now = time.monotonic()
+            if now - last_poll >= max(0.5, float(poll_interval)):
+                try:
+                    poll_callback()
+                except Exception as exc:
+                    print(f"Warning: live typing update skipped: {type(exc).__name__}: {exc}", flush=True)
+                last_poll = now
+            if returncode is not None:
+                break
+            if deadline is not None and now >= deadline:
+                process.kill()
+                process.wait()
+                raise subprocess.TimeoutExpired(command, timeout)
+            time.sleep(0.5)
+    except BaseException:
+        if process.poll() is None:
+            process.terminate()
+        raise
+    if process.returncode != 0:
+        raise subprocess.CalledProcessError(process.returncode, command)
+    try:
+        poll_callback()
+    except Exception as exc:
+        print(f"Warning: final live typing update skipped: {type(exc).__name__}: {exc}", flush=True)
     return command
 
 
@@ -221,6 +257,7 @@ def write_typing_manifest_from_transfer(
     inference_dir: str | Path,
     manifest_path: str | Path,
     dataset_id: str | None = None,
+    require_all_masks: bool = True,
 ) -> dict[str, Any]:
     """Write a contamination typing CSV manifest from staged micrographs and masks."""
 
@@ -253,7 +290,7 @@ def write_typing_manifest_from_transfer(
             }
         )
 
-    if missing_masks:
+    if missing_masks and require_all_masks:
         examples = ", ".join(missing_masks[:3])
         raise FileNotFoundError(f"Typing masks were not found for staged micrographs: {examples}")
     if not rows:
@@ -276,6 +313,9 @@ def write_typing_manifest_from_transfer(
     return {
         "typing_manifest": str(output_path),
         "images": int(len(rows)),
+        "images_expected": int(len(micrographs)),
+        "missing_masks": int(len(missing_masks)),
+        "complete": int(len(missing_masks)) == 0,
         "dataset_id": resolved_dataset_id,
     }
 
@@ -287,6 +327,7 @@ def run_local_typing(
     normalization_method: str | None = None,
     min_component_area_px: int | None = None,
     pixel_size_angstrom: float | None = None,
+    expected_images: int | None = None,
     timeout: float | None = None,
     env_overrides: Mapping[str, str] | None = None,
 ) -> list[str]:
@@ -308,6 +349,8 @@ def run_local_typing(
         command.extend(["--min-component-area-px", str(int(min_component_area_px))])
     if pixel_size_angstrom is not None:
         command.extend(["--pixel-size-angstrom", str(float(pixel_size_angstrom))])
+    if expected_images is not None:
+        command.extend(["--expected-images", str(int(expected_images))])
     print(
         "Running contamination typing; 4-panel OTF images will refresh after typing finishes.",
         flush=True,
