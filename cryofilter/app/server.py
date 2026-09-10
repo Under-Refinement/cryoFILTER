@@ -888,7 +888,10 @@ def _build_cryosparc_predict_spec(payload: dict[str, Any], *, work_dir: Path) ->
     _add_option(argv, "--num-gpus", payload.get("num_gpus"))
     _add_option(argv, "--max-transfer-gb", payload.get("max_transfer_gb"))
     _add_option(argv, "--typing-summary", payload.get("typing_summary"))
-    if not _as_bool(payload.get("run_typing"), default=True):
+    run_typing = _as_bool(payload.get("run_typing"), default=True)
+    if run_typing and not _optional_str(payload.get("typing_summary")):
+        argv.append("--run-typing")
+    elif not run_typing:
         argv.append("--no-run-typing")
 
     infer_args = _as_tokens(payload.get("infer_args"))
@@ -929,7 +932,7 @@ def _build_cryosparc_predict_spec(payload: dict[str, Any], *, work_dir: Path) ->
             "run_id": run_id,
             "local_run_root": run_root,
             "local_run_dir": run_dir,
-            "run_typing": _as_bool(payload.get("run_typing"), default=True),
+            "run_typing": run_typing,
             "num_cpus": payload.get("num_cpus"),
             "num_gpus": payload.get("num_gpus"),
             "export_masks": export_masks,

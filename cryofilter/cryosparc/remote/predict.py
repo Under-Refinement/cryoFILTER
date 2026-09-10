@@ -169,8 +169,9 @@ def run_local_inference(
     env_overrides: Mapping[str, str] | None = None,
     num_cpus: int | None = None,
     num_gpus: int | None = None,
+    render_particle_overlays: bool = True,
 ) -> list[str]:
-    """Run cryoFILTER inference with particle overlays enabled."""
+    """Run cryoFILTER inference, optionally deferring OTF overlays until typing finishes."""
 
     command = [
         sys.executable,
@@ -185,12 +186,14 @@ def run_local_inference(
         str(float(threshold)),
         "--particle-file",
         str(Path(particle_star).expanduser().resolve()),
-        "--render-particle-overlays",
-        "--no-particle-overlay-contact-sheet",
         "--overwrite-filtered-particles",
         "--particle-exclusion-distance-angstrom",
         str(float(exclusion_distance_angstrom)),
     ]
+    if render_particle_overlays:
+        command.extend(["--render-particle-overlays", "--no-particle-overlay-contact-sheet"])
+    else:
+        command.append("--no-render-particle-overlays")
     if checkpoint is not None:
         command.extend(["--checkpoint", str(Path(checkpoint).expanduser())])
     if num_cpus is not None:

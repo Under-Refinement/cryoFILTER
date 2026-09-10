@@ -1196,9 +1196,10 @@ def _refresh_typed_particle_overlays(
     inference_summary_file: Path,
     typing_summary_path: Path | None,
     particle_exclusion_distance_angstrom: float,
+    create_if_missing: bool = False,
 ) -> dict[str, Any]:
     if typing_summary_path is None or not typing_summary_path.exists() or not inference_summary_file.exists():
-        return {"enabled": False, "refreshed": 0}
+        return {"enabled": False, "refreshed": 0, "reason": "missing typing or inference summary"}
 
     import numpy as np
 
@@ -1208,17 +1209,31 @@ def _refresh_typed_particle_overlays(
     inference_summary = _load_json_object(inference_summary_file)
     overlay = inference_summary.get("particle_overlay_rendering")
     if not isinstance(overlay, dict) or not overlay.get("enabled"):
-        return {"enabled": False, "refreshed": 0}
+        if not create_if_missing:
+            return {"enabled": False, "refreshed": 0, "reason": "particle overlays were not enabled"}
+        overlay = {
+            "enabled": True,
+            "output_dir": str(local_inference_dir / "OTF_images"),
+            "contact_sheet": False,
+            "max_display_dim": 1400,
+            "particle_diameter_px": 34.0,
+            "mask_alpha": 0.35,
+            "raw_reference_panel": True,
+            "typed_mask_panel": False,
+            "probability_panel": True,
+            "frames": [],
+        }
+        inference_summary["particle_overlay_rendering"] = overlay
 
     typed_masks = _typing_mask_lookup(typing_summary_path)
     if not typed_masks:
-        return {"enabled": True, "refreshed": 0, "missing_typed_masks": True}
+        return {"enabled": True, "refreshed": 0, "missing_typed_masks": True, "reason": "no typed masks found"}
 
     manifest = predict_helpers.load_transfer_manifest(local_manifest_file)
     micrographs = manifest.get("micrographs")
     particles = manifest.get("particles")
     if not isinstance(micrographs, list) or not isinstance(particles, list):
-        return {"enabled": True, "refreshed": 0, "missing_manifest_rows": True}
+        return {"enabled": True, "refreshed": 0, "missing_manifest_rows": True, "reason": "transfer manifest missing micrographs or particles"}
 
     particles_by_micrograph: dict[int, list[dict[str, Any]]] = {}
     for particle in particles:
@@ -1229,12 +1244,21 @@ def _refresh_typed_particle_overlays(
     rows_by_stem = _inference_summary_rows_by_stem(inference_summary)
     refreshed = 0
     skipped: list[str] = []
+    skipped_reasons: dict[str, str] = {}
+    overlay_dir = _resolve_local_result_path(overlay.get("output_dir"), base=local_inference_dir)
+    if overlay_dir is None:
+        overlay_dir = local_inference_dir / "OTF_images"
+    overlay_dir.mkdir(parents=True, exist_ok=True)
+    frames = overlay.get("frames")
+    if not isinstance(frames, list):
+        frames = []
+        overlay["frames"] = frames
     for entry in micrographs:
         if not isinstance(entry, dict):
             continue
         local_path = predict_helpers._manifest_micrograph_path(local_transfer_dir, entry)
         stem = local_path.stem
-        row = rows_by_stem.get(stem, {})
+        row = rows_by_stem.get(stem)
         typed_path = typed_masks.get(stem)
         if typed_path is None:
             for key, path in typed_masks.items():
@@ -1242,11 +1266,11 @@ def _refresh_typed_particle_overlays(
                     typed_path = path
                     break
         mask_path = _resolve_local_result_path(
-            row.get("output_mask_npy"),
+            row.get("output_mask_npy") if isinstance(row, dict) else None,
             base=local_inference_dir,
         ) or predict_helpers._mask_output_path(local_inference_dir, stem)
         prob_path = _resolve_local_result_path(
-            row.get("output_prob_npy"),
+            row.get("output_prob_npy") if isinstance(row, dict) else None,
             base=local_inference_dir,
         )
         particle_overlay = row.get("particle_overlay") if isinstance(row, dict) else None
@@ -1254,14 +1278,27 @@ def _refresh_typed_particle_overlays(
         if isinstance(particle_overlay, dict):
             output_png = _resolve_local_result_path(particle_overlay.get("output_png"), base=local_inference_dir)
         if output_png is None:
-            overlay_dir = _resolve_local_result_path(overlay.get("output_dir"), base=local_inference_dir)
-            if overlay_dir is not None:
-                output_png = overlay_dir / f"{stem}_particle_overlay.png"
+            output_png = overlay_dir / f"{stem}_particle_overlay.png"
+        if row is None:
+            skipped.append(stem)
+            skipped_reasons[stem] = "missing inference summary row"
+            continue
         if typed_path is None or prob_path is None or output_png is None:
             skipped.append(stem)
+            skipped_reasons[stem] = "missing typed mask, probability map, or output path"
             continue
         if not local_path.exists() or not mask_path.exists() or not prob_path.exists() or not typed_path.exists():
             skipped.append(stem)
+            missing = []
+            if not local_path.exists():
+                missing.append("micrograph")
+            if not mask_path.exists():
+                missing.append("mask")
+            if not prob_path.exists():
+                missing.append("probability")
+            if not typed_path.exists():
+                missing.append("typed mask")
+            skipped_reasons[stem] = "missing " + ", ".join(missing)
             continue
 
         height, width = predict_helpers._shape_yx(entry, local_path)
@@ -1306,12 +1343,36 @@ def _refresh_typed_particle_overlays(
             include_typed_mask_panel=True,
             include_probability_panel=True,
         )
+        n_kept = int(np.count_nonzero(keep))
+        n_removed = int(len(keep) - n_kept)
+        frame_record = {
+            "micrograph": str(local_path),
+            "output_png": str(output_png),
+            "particles": int(len(keep)),
+            "particles_kept": n_kept,
+            "particles_removed": n_removed,
+            "typed_mask_npy": str(typed_path),
+            "typed_mask_panel": True,
+        }
         if isinstance(particle_overlay, dict):
-            particle_overlay["typed_mask_npy"] = str(typed_path)
-            particle_overlay["typed_mask_panel"] = True
+            particle_overlay.update(frame_record)
+        else:
+            row["particle_overlay"] = frame_record
+        replaced = False
+        for index, frame in enumerate(frames):
+            if not isinstance(frame, dict):
+                continue
+            if str(frame.get("micrograph") or "") == str(local_path) or str(frame.get("output_png") or "") == str(output_png):
+                frames[index] = {**frame, **frame_record}
+                replaced = True
+                break
+        if not replaced:
+            frames.append(frame_record)
         refreshed += 1
 
     overlay["typed_mask_panel"] = refreshed > 0
+    overlay["raw_reference_panel"] = refreshed > 0
+    overlay["probability_panel"] = refreshed > 0
     overlay["panel_layout"] = [
         "raw_micrograph",
         "mask_and_particles",
@@ -1322,10 +1383,27 @@ def _refresh_typed_particle_overlays(
         "refreshed": int(refreshed),
         "skipped": int(len(skipped)),
         "skipped_stems": skipped[:10],
+        "skipped_reasons": {stem: skipped_reasons.get(stem, "skipped") for stem in skipped[:10]},
         "typing_summary": str(typing_summary_path),
     }
     inference_summary_file.write_text(json.dumps(inference_summary, indent=2) + "\n", encoding="utf-8")
     return {"enabled": True, "refreshed": int(refreshed), "skipped": int(len(skipped))}
+
+
+def _require_typed_particle_overlay_refresh(refresh: dict[str, Any], *, run_typing: bool) -> None:
+    if not run_typing or not bool(refresh.get("enabled")):
+        return
+    if int(refresh.get("refreshed") or 0) > 0:
+        return
+    reason = str(refresh.get("reason") or "no typed particle overlays were refreshed")
+    skipped = refresh.get("skipped_reasons")
+    if isinstance(skipped, dict) and skipped:
+        examples = "; ".join(f"{stem}: {why}" for stem, why in list(skipped.items())[:3])
+        reason = f"{reason}; {examples}"
+    raise RuntimeError(
+        "Typing completed, but cryoFILTER could not create the 4-panel typed OTF images. "
+        f"{reason}"
+    )
 
 
 def _finalize_prediction_remote(
@@ -1498,6 +1576,11 @@ def _finalize_local_run_outputs(
             inference_summary_file=inference_summary_file,
             typing_summary_path=typing_summary_path,
             particle_exclusion_distance_angstrom=float(particle_exclusion_distance_angstrom),
+            create_if_missing=True,
+        )
+        _require_typed_particle_overlay_refresh(
+            payload["typed_otf_overlays"],
+            run_typing=run_typing,
         )
 
     split = predict_helpers.classify_particles_from_manifest(
@@ -1844,6 +1927,7 @@ def _run_predict(args: argparse.Namespace, config: CryoSPARCIntegrationConfig) -
             env_overrides=resource_env,
             num_cpus=getattr(args, "num_cpus", None),
             num_gpus=getattr(args, "num_gpus", None),
+            render_particle_overlays=not (run_typing or typing_summary_path is not None),
         )
         payload["inference_command"] = inference_command
 

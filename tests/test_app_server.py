@@ -304,7 +304,7 @@ def test_cryosparc_predict_job_spec_uses_typing_default(tmp_path: Path) -> None:
     argv = spec.steps[0].argv
     assert argv[:4] == [sys.executable, "-m", "cryofilter.cli", "cryosparc"]
     assert "predict" in argv
-    assert "--run-typing" not in argv
+    assert "--run-typing" in argv
     assert "--no-run-typing" not in argv
     assert argv[argv.index("--config") + 1] == "cryosparc.toml"
     assert "--cryosparc-base-url" not in argv
@@ -499,6 +499,27 @@ def test_cryosparc_predict_job_spec_can_opt_out_of_typing(tmp_path: Path) -> Non
 
     assert "--no-run-typing" in spec.steps[0].argv
     assert spec.metadata["run_typing"] is False
+
+
+def test_cryosparc_predict_job_spec_does_not_force_typing_with_summary(tmp_path: Path) -> None:
+    spec = build_job_spec(
+        "cryosparc_predict",
+        {
+            "project": "P1",
+            "workspace": "W2",
+            "micrographs": "J3:micrographs",
+            "particles": "J4:particles",
+            "checkpoint": "custom_weights.pt",
+            "run_typing": True,
+            "typing_summary": str(tmp_path / "typing" / "summary.json"),
+        },
+        work_dir=tmp_path,
+    )
+
+    assert "--typing-summary" in spec.steps[0].argv
+    assert "--run-typing" not in spec.steps[0].argv
+    assert "--no-run-typing" not in spec.steps[0].argv
+    assert spec.metadata["run_typing"] is True
 
 
 def test_cryosparc_predict_job_spec_passes_bridge_controls(tmp_path: Path) -> None:

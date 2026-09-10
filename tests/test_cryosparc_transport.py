@@ -771,9 +771,38 @@ def test_run_local_inference_builds_required_input_flag(
     assert command[command.index("--num-gpus") + 1] == "1"
     assert "--device" in command
     assert "--no-particle-overlay-contact-sheet" in command
+    assert "--no-render-particle-overlays" not in command
     assert calls[0][0] == command
     assert calls[0][1]["env"]["OMP_NUM_THREADS"] == "8"
     assert calls[0][1]["env"]["CUDA_VISIBLE_DEVICES"] == "0"
+
+
+def test_run_local_inference_can_defer_particle_overlay_rendering(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return _Completed(returncode=0)
+
+    monkeypatch.setattr(predict_helpers.subprocess, "run", fake_run)
+
+    command = predict_helpers.run_local_inference(
+        input_dir=tmp_path / "mics",
+        output_dir=tmp_path / "infer",
+        checkpoint=tmp_path / "model.pt",
+        threshold=0.6,
+        particle_star=tmp_path / "particles.star",
+        exclusion_distance_angstrom=100.0,
+        render_particle_overlays=False,
+    )
+
+    assert "--no-render-particle-overlays" in command
+    assert "--render-particle-overlays" not in command
+    assert "--no-particle-overlay-contact-sheet" not in command
+    assert calls[0][0] == command
 
 
 def test_write_typing_manifest_from_transfer_pairs_micrographs_and_masks(tmp_path: Path) -> None:
@@ -1026,6 +1055,118 @@ def test_refresh_typed_particle_overlays_writes_four_panel_png(tmp_path: Path) -
     assert summary["particle_overlay_rendering"]["typed_mask_panel"] is True
 
 
+def test_refresh_typed_particle_overlays_creates_four_panel_otf_when_inference_deferred(
+    tmp_path: Path,
+) -> None:
+    import mrcfile
+    from PIL import Image
+
+    run_dir = tmp_path / "runs" / "00000000-0000-0000-0000-000000000100"
+    transfer_dir = run_dir / "transfer"
+    micrograph_dir = transfer_dir / "micrographs"
+    inference_dir = run_dir / "inference"
+    typing_dir = run_dir / "typing"
+    micrograph_dir.mkdir(parents=True)
+    inference_dir.mkdir(parents=True)
+    typing_dir.mkdir(parents=True)
+
+    micrograph = micrograph_dir / "mic_002.mrc"
+    yy, xx = np.mgrid[0:48, 0:64]
+    with mrcfile.new(micrograph, overwrite=True) as handle:
+        handle.set_data((np.sin(xx / 5.0) + np.cos(yy / 11.0)).astype(np.float32))
+        handle.voxel_size = 1.5
+    mask = np.zeros((48, 64), dtype=np.uint8)
+    mask[10:34, 20:44] = 1
+    probability = mask.astype(np.float32) * 0.9
+    typed_mask = np.zeros((48, 64), dtype=np.uint8)
+    typed_mask[10:22, 20:44] = 2
+    typed_mask[22:34, 20:44] = 3
+    mask_path = inference_dir / "mic_002_mask.npy"
+    prob_path = inference_dir / "mic_002_prob.npy"
+    typed_dir = typing_dir / "typed_masks"
+    typed_dir.mkdir()
+    typed_path = typed_dir / "P1_W2__mic_002_typed_mask.npy"
+    np.save(mask_path, mask)
+    np.save(prob_path, probability)
+    np.save(typed_path, typed_mask)
+    (run_dir / "transfer_manifest.json").write_text(
+        json.dumps(
+            {
+                "micrographs": [
+                    {
+                        "uid": 7,
+                        "transfer_filename": "micrographs/mic_002.mrc",
+                        "shape_yx": [48, 64],
+                        "pixel_size_angstrom": 1.5,
+                    }
+                ],
+                "particles": [
+                    {"uid": 11, "micrograph_uid": 7, "center_x_frac": 0.5, "center_y_frac": 0.5},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (inference_dir / "inference_summary.json").write_text(
+        json.dumps(
+            {
+                "inputs": [
+                    {
+                        "input_mrc": str(micrograph),
+                        "output_mask_npy": str(mask_path),
+                        "output_prob_npy": str(prob_path),
+                    }
+                ],
+                "particle_overlay_rendering": {"enabled": False},
+            }
+        ),
+        encoding="utf-8",
+    )
+    image_csv = typing_dir / "image_contamination_summary.csv"
+    image_csv.write_text(
+        "image_id,dataset_id,stem,total_pixels,contaminated_pixels,carbon_area_px,crystalline_area_px,aggregate_area_px,ethane_area_px\n"
+        "P1_W2__mic_002,P1_W2,mic_002,3072,576,0,288,288,0\n",
+        encoding="utf-8",
+    )
+    (typing_dir / "summary.json").write_text(
+        json.dumps(
+            {
+                "typed_mask_dir": str(typed_dir),
+                "image_contamination_summary_csv": str(image_csv),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    refreshed = remote_cli._refresh_typed_particle_overlays(
+        local_manifest_file=run_dir / "transfer_manifest.json",
+        local_transfer_dir=transfer_dir,
+        local_inference_dir=inference_dir,
+        inference_summary_file=inference_dir / "inference_summary.json",
+        typing_summary_path=typing_dir / "summary.json",
+        particle_exclusion_distance_angstrom=0.0,
+        create_if_missing=True,
+    )
+
+    assert refreshed["refreshed"] == 1
+    output_path = inference_dir / "OTF_images" / "mic_002_particle_overlay.png"
+    frame = Image.open(output_path)
+    assert frame.size == (64 * 4 + 16 * 3, 48)
+    summary = json.loads((inference_dir / "inference_summary.json").read_text(encoding="utf-8"))
+    overlay = summary["particle_overlay_rendering"]
+    assert overlay["typed_mask_panel"] is True
+    assert overlay["frames"][0]["typed_mask_panel"] is True
+    assert summary["inputs"][0]["particle_overlay"]["output_png"] == str(output_path)
+
+
+def test_required_typed_particle_overlay_refresh_fails_loudly() -> None:
+    with pytest.raises(RuntimeError, match="4-panel typed OTF"):
+        remote_cli._require_typed_particle_overlay_refresh(
+            {"enabled": True, "refreshed": 0, "reason": "no typed masks found"},
+            run_typing=True,
+        )
+
+
 def test_auto_typing_defaults_to_enabled_without_summary(tmp_path: Path) -> None:
     assert remote_cli._resolve_auto_typing(
         argparse.Namespace(run_typing=None),
@@ -1082,6 +1223,7 @@ def test_predict_orchestrates_prepare_infer_push_and_finalize(
     captured_diagnostics: dict[str, object] = {}
     captured_inference: dict[str, object] = {}
     captured_typing: dict[str, object] = {}
+    captured_typed_overlay_refresh: dict[str, object] = {}
 
     class FakeTransport:
         def run(self, argv, *, timeout=None):
@@ -1217,6 +1359,12 @@ def test_predict_orchestrates_prepare_infer_push_and_finalize(
     )
     monkeypatch.setattr(predict_helpers, "run_local_typing", fake_run_local_typing)
     monkeypatch.setattr(
+        remote_cli,
+        "_refresh_typed_particle_overlays",
+        lambda **kwargs: captured_typed_overlay_refresh.update(kwargs)
+        or {"enabled": True, "refreshed": 1, "skipped": 0},
+    )
+    monkeypatch.setattr(
         predict_helpers,
         "classify_particles_from_manifest",
         lambda **kwargs: {
@@ -1274,9 +1422,11 @@ def test_predict_orchestrates_prepare_infer_push_and_finalize(
 
     assert captured_inference["num_cpus"] == 8
     assert captured_inference["num_gpus"] == 1
+    assert captured_inference["render_particle_overlays"] is False
     assert captured_inference["env_overrides"]["OMP_NUM_THREADS"] == "8"
     assert captured_inference["env_overrides"]["CUDA_VISIBLE_DEVICES"] == "0"
     assert captured_typing["env_overrides"]["OMP_NUM_THREADS"] == "8"
+    assert captured_typed_overlay_refresh["create_if_missing"] is True
 
     prepare_call = next(call for call in calls if call[0] == "run" and "prepare" in call[1])
     assert "--no-create-external-job" not in prepare_call[1]
@@ -1356,6 +1506,7 @@ def test_finalize_run_reuses_local_run_and_runs_typing_by_default(
 
     captured_diagnostics: dict[str, object] = {}
     captured_typing: dict[str, object] = {}
+    captured_typed_overlay_refresh: dict[str, object] = {}
 
     class FakeTransport:
         def run(self, argv, *, timeout=None):
@@ -1457,6 +1608,12 @@ def test_finalize_run_reuses_local_run_and_runs_typing_by_default(
     )
     monkeypatch.setattr(predict_helpers, "run_local_typing", fake_run_local_typing)
     monkeypatch.setattr(
+        remote_cli,
+        "_refresh_typed_particle_overlays",
+        lambda **kwargs: captured_typed_overlay_refresh.update(kwargs)
+        or {"enabled": True, "refreshed": 1, "skipped": 0},
+    )
+    monkeypatch.setattr(
         predict_helpers,
         "classify_particles_from_manifest",
         lambda **kwargs: {
@@ -1508,6 +1665,7 @@ def test_finalize_run_reuses_local_run_and_runs_typing_by_default(
 
     assert captured_typing["manifest_path"] == local_run_dir / "contamination_typing_manifest.csv"
     assert captured_typing["output_dir"] == local_run_dir / "typing"
+    assert captured_typed_overlay_refresh["create_if_missing"] is True
     assert str(captured_diagnostics["typing_summary_path"]).endswith("/typing/summary.json")
     finalize_call = next(call for call in calls if call[0] == "run" and "finalize-prediction" in call[1])
     assert "/remote/work/00000000-0000-0000-0000-000000000013/transfer_manifest.json" in finalize_call[1]
