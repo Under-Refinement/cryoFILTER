@@ -1,4 +1,5 @@
 {
+
   "validation_date": "2026-09-10",
   "method": "Fresh FP32 GPU inference using the distributed publication JSON regressions and weights-only encoder on all frozen publication evaluation images and binary masks",
   "model_id": "publication-final-top76-componentpost-aeexpert",

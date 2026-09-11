@@ -18,7 +18,7 @@ For an existing pip environment, install Git LFS using your system's package man
 
 You can also [download encoder.pt directly](https://media.githubusercontent.com/media/Under-Refinement/cryoFILTER/main/cryofilter/data/publication/encoder.pt) and pass its location with `--typing-checkpoint`. For the UI's default path, place it at `cryofilter/data/publication/encoder.pt` in the checkout.
 
-The `encoder.pt` file contains exactly the publication feature-extractor tensors with training optimizer data removed. Its SHA256 is `6c6927165c23d89daa4168aeaa8a32606628346d6418bac9125da6f1a08141b1`. The JSON manifest records the remaining artifact hashes and original checkpoint provenance.
+The `encoder.pt` file contains exactly the publication feature-extractor tensors with training optimizer data removed. Its SHA256 is `e76443ced11f442878a410b2a3a01279dc0040c48ed36862642301d88e817a6f`. The JSON manifest records the remaining artifact hashes and original checkpoint provenance.
 
 The segmentation checkpoint selected in the app controls the binary mask. Subtype feature extraction always uses its own matched publication weights. A different segmentation model can change which contamination pixels are captured, so its combined performance needs separate evaluation.
 
@@ -42,3 +42,5 @@ The image and dataset summaries count actual subtype pixels, including mixed-typ
 Fresh inference with the distributed model reproduces **80.0851815% accuracy**, **80.7016057% balanced accuracy**, and **76.6957455% macro F1**, across 158 images and 18,440,384 captured, labeled contamination pixels. All predicted masks match the frozen publication predictions exactly, with zero differing pixels across 102,706 evaluated patch centers. This metric excludes clean and unlabeled pixels and contamination missed by the binary mask. Aggregate F1 is 54.41%; pooled accuracy alone does not describe every class equally well.
 
 The [release validation record](../cryofilter/data/publication/validation.json) includes the exact confusion matrix, per-class F1 scores, and evaluation scope. The labeled validation snapshot is fixed; the older session paths retained in its original manifest must not be used as labels. No retraining or threshold tuning on the validation labels is part of this release conversion.
+
+<!-- UI updates (classifier) -->

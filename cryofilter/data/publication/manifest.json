@@ -11,20 +11,20 @@
   },
   "files": {
     "models.json": {
-      "sha256": "94e6023d441768db66a379146296381d9f927413820b4b8c234be5260cc0b319",
-      "bytes": 188322
+      "sha256": "4be87a1a2b9d4e93c92c77e30cddb1347201a302d99a413a05d60497ac5a2b60",
+      "bytes": 188323
     },
     "settings.json": {
-      "sha256": "5af37ccc09dc7260c1b3bff0a89cbca44c33459567695151ff7352a90a087ade",
-      "bytes": 3435
+      "sha256": "6ccf4c9b3930929352ce7a9e16c95a824c3deae8c615dd1a2a54f211e03c57ea",
+      "bytes": 3436
     },
     "model_config.json": {
-      "sha256": "b9fb16eb2b0f4293db88d68af3c8caf84826104ef18d8d59972c3f9ffcaf6f11",
-      "bytes": 960
+      "sha256": "8d61d774fa0dfb99e3dd4e035d55cb90a77d50291d3b755156c48542974d9c7f",
+      "bytes": 961
     },
     "encoder.pt": {
-      "sha256": "6c6927165c23d89daa4168aeaa8a32606628346d6418bac9125da6f1a08141b1",
-      "bytes": 229257951
+      "sha256": "e76443ced11f442878a410b2a3a01279dc0040c48ed36862642301d88e817a6f",
+      "bytes": 229257898
     }
   },
   "saved_validation_accuracy": 0.8008518152333487,

@@ -1,3 +1,4 @@
+# Publication classifier UI integration.
 """Public output contracts and cache behavior for learned pixel typing."""
 import json
 

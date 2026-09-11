@@ -1,3 +1,4 @@
+# Publication classifier UI integration.
 import json
 from pathlib import Path
 

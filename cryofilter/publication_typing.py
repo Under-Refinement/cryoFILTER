@@ -1,3 +1,4 @@
+# Publication classifier UI integration.
 """Portable, frozen publication contamination subtype inference."""
 from __future__ import annotations
 

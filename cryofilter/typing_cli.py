@@ -1,3 +1,4 @@
+# Publication classifier UI integration.
 """Predict release-style contamination types from binary contamination masks."""
 
 from __future__ import annotations

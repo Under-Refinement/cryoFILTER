@@ -1,3 +1,4 @@
+# Publication classifier UI integration.
 """Engaging-side CLI commands for CryoSPARC remote integration."""
 
 from __future__ import annotations

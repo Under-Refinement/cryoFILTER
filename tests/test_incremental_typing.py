@@ -1,3 +1,4 @@
+# Publication classifier UI integration.
 """Regression coverage for cached features and dataset-relative typing."""
 
 import json

@@ -1,3 +1,4 @@
+# Publication classifier UI integration.
 """Numerical inference kernels from the FINAL_top76 publication classifier.
 
 Derived from the frozen patch-aggregation evaluation implementation. Training,

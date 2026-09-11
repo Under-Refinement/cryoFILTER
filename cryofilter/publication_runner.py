@@ -1,3 +1,4 @@
+# Publication classifier UI integration.
 """Incremental UI/CLI output adapter for publication subtype inference."""
 from __future__ import annotations
 

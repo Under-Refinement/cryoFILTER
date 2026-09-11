@@ -185,3 +185,5 @@ Related work:
 ## License
 
 cryoFILTER is licensed under the [GNU General Public License version 3](LICENSE).
+
+<!-- UI updates (classifier) -->

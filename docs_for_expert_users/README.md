@@ -326,3 +326,5 @@ cryofilter type --help
 cryofilter train --help
 cryoFILTER app --help
 ```
+
+<!-- UI updates (classifier) -->
