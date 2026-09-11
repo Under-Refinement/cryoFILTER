@@ -11,6 +11,7 @@ dependencies:
   - pytorch-cuda=11.6
   - "numpy<2.0"  # PyTorch 1.13.1 requires NumPy < 2.0
   - pandas
+  - git-lfs
   - scikit-learn
   # Optional desktop annotation fallback; the browser app does not need Qt.
   - pyside6>=6.5.0

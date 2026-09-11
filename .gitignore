@@ -31,8 +31,9 @@ htmlcov/
 *.zip
 
 # Model weights
-# Released model weights are distributed through Zenodo, not Git.
+# Segmentation weights use Zenodo; the publication encoder uses Git LFS.
 *.pt
+!cryofilter/data/publication/encoder.pt
 pretrained_models/
 
 # Annotations (user-specific, can be large)

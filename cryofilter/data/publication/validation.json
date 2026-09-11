@@ -1,0 +1,55 @@
+{
+  "validation_date": "2026-09-10",
+  "method": "Fresh FP32 GPU inference using the distributed publication JSON regressions and weights-only encoder on all frozen publication evaluation images and binary masks",
+  "model_id": "publication-final-top76-componentpost-aeexpert",
+  "images": 158,
+  "captured_labeled_pixels": 18440384,
+  "correct_pixels": 14768015,
+  "accuracy": 0.8008518152333487,
+  "balanced_accuracy": 0.8070160567516645,
+  "macro_f1": 0.7669574549669019,
+  "class_order": [
+    "Carbon",
+    "Crystalline",
+    "Aggregate",
+    "Ethane"
+  ],
+  "confusion_matrix": [
+    [
+      3576815,
+      167182,
+      118032,
+      42487
+    ],
+    [
+      14534,
+      2893230,
+      37036,
+      247433
+    ],
+    [
+      362173,
+      14241,
+      1264519,
+      276448
+    ],
+    [
+      33120,
+      1048572,
+      1311111,
+      7033451
+    ]
+  ],
+  "per_class_f1": {
+    "carbon": 0.9065374182090892,
+    "crystalline": 0.7909908033099227,
+    "aggregate": 0.5441039190598955,
+    "ethane": 0.8261976792887004
+  },
+  "pixels_differing_from_frozen_predictions": 0,
+  "captured_pixels_differing_from_frozen_predictions": 0,
+  "confusion_matches_publication_exactly": true,
+  "patch_centers": 102706,
+  "metric_scope": "Subtype accuracy conditional on the frozen binary mask capturing a labeled contamination pixel; excludes clean, unlabeled and uncaptured pixels. Not a new benchmark of the current public segmentation weights.",
+  "retrained": false
+}

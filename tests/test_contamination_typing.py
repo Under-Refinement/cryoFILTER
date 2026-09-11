@@ -178,7 +178,7 @@ def test_public_typing_uses_required_names_and_handles_clean_images(
     ).to_csv(manifest, index=False)
 
     output_dir = tmp_path / "typing"
-    assert typing_main(["--manifest", str(manifest), "--output-dir", str(output_dir)]) == 0
+    assert typing_main(["--classifier", "heuristic", "--manifest", str(manifest), "--output-dir", str(output_dir)]) == 0
 
     payload = json.loads((output_dir / "summary.json").read_text(encoding="utf-8"))
     assert payload["type_order"] == ["Carbon", "Crystalline", "Aggregate", "Ethane"]
@@ -236,4 +236,4 @@ def test_typing_live_summary_has_typed_mask_ready(tmp_path: Path, monkeypatch) -
 
     monkeypatch.setattr(typing_cli, "_write_summary_outputs", assert_mask_before_summary)
 
-    assert typing_main(["--manifest", str(manifest), "--output-dir", str(output_dir)]) == 0
+    assert typing_main(["--classifier", "heuristic", "--manifest", str(manifest), "--output-dir", str(output_dir)]) == 0

@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "model_id": "publication-final-top76-componentpost-aeexpert",
+  "source_run": "soft_captured_patch384_s16_allphysfull_hierlogreg_edgecorner_lesscryst_FINAL_top76_componentpost_aeexpert",
+  "source_encoder_sha256": "967e9a87d7d362edd9d28380cd2dd660e75fa4a2f47aa4d2d423548c7f2f2966",
+  "classes": {
+    "1": "Carbon",
+    "2": "Crystalline",
+    "3": "Aggregate",
+    "4": "Ethane"
+  },
+  "files": {
+    "models.json": {
+      "sha256": "94e6023d441768db66a379146296381d9f927413820b4b8c234be5260cc0b319",
+      "bytes": 188322
+    },
+    "settings.json": {
+      "sha256": "5af37ccc09dc7260c1b3bff0a89cbca44c33459567695151ff7352a90a087ade",
+      "bytes": 3435
+    },
+    "model_config.json": {
+      "sha256": "b9fb16eb2b0f4293db88d68af3c8caf84826104ef18d8d59972c3f9ffcaf6f11",
+      "bytes": 960
+    },
+    "encoder.pt": {
+      "sha256": "6c6927165c23d89daa4168aeaa8a32606628346d6418bac9125da6f1a08141b1",
+      "bytes": 229257951
+    }
+  },
+  "saved_validation_accuracy": 0.8008518152333487,
+  "saved_validation_images": 158,
+  "metric": "pixel subtype accuracy conditional on captured labeled contamination",
+  "source_artifact_sha256": {
+    "patch_model.joblib": "a1f75c8934eb2480ed70d20ec44f303f553503d375e6f641a0296d4473def6bb",
+    "patch_model_rescue.joblib": "3f2855b7c2cc27a5879945c74a6e4d60a7ff50d582aab496972497df9ef9a726",
+    "pair_expert_models.joblib": "1be0f7814041020ee7e13b469539249abad34571904394b920e0727902dd8c09",
+    "resolved_run_config.json": "c6d5c5d95d55ee064b9dd1d0c93aa09437533c751c2003d4603dc96bced6f9a8"
+  },
+  "export_verification": "All feature-extractor tensors preserved exactly; JSON regression probabilities matched original sklearn models exactly in conversion checks."
+}

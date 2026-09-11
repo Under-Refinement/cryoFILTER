@@ -5,12 +5,14 @@ include cryoFILTER_OTF_repimage.png
 include cryoFILTER_gif_figs_upscaled_3s.gif
 
 include docs/fine_tuning.md
+include docs/publication_classifier.md
 include docs/app/LOCAL_WRAPPER.md
 include docs/cryosparc/REMOTE_INTEGRATION.md
 include docs/cryosparc/cryosparc.example.toml
 include docs/screenshots/cryoFILTER_app_wrapper.png
 recursive-include docs_for_expert_users *.md
 recursive-include cryofilter *.py *.json *.html *.css *.js
+include cryofilter/data/publication/encoder.pt
 recursive-include models *.py
 recursive-include utils *.py
 include scripts/gt_mask_editor_modern.py
@@ -30,6 +32,7 @@ include tests/test_frequency_band_checkpoint_config.py
 include tests/test_gui.py
 include tests/test_install_cryosparc_tools.py
 include tests/test_particle_filtering.py
+include tests/test_publication_typing.py
 include tests/test_qc_render.py
 include tests/test_release_cli_policies.py
 include tests/test_star_import.py

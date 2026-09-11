@@ -35,7 +35,7 @@ def _inputs(root: Path, count: int = 3) -> tuple[Path, pd.DataFrame]:
 
 
 def _run(manifest: Path, output: Path, *extra: str) -> None:
-    assert typing_cli.main(["--manifest", str(manifest), "--output-dir", str(output), *extra]) == 0
+    assert typing_cli.main(["--classifier", "heuristic", "--manifest", str(manifest), "--output-dir", str(output), *extra]) == 0
 
 
 def _assert_same_outputs(first: Path, second: Path) -> None:

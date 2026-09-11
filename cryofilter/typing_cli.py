@@ -73,6 +73,12 @@ TYPING_CACHE_VERSION = 1
 
 
 def _add_type_arguments(ap: argparse.ArgumentParser) -> None:
+    ap.add_argument("--classifier", choices=("publication", "heuristic"), default="publication",
+                    help="Subtype classifier (default: verified publication model).")
+    ap.add_argument("--typing-checkpoint", type=Path,
+                    help="Publication encoder.pt; independent of the segmentation checkpoint.")
+    ap.add_argument("--typing-device", default="auto", help="Publication typing device: auto, cpu, cuda, or cuda:N.")
+    ap.add_argument("--typing-batch-size", type=int, default=16, help="Publication feature-extraction batch size.")
     ap.add_argument("--manifest", type=Path, required=True, help="CSV with dataset_id, stem, micrograph path, and mask path.")
     ap.add_argument(
         "--output-dir",
@@ -102,7 +108,7 @@ def _add_type_arguments(ap: argparse.ArgumentParser) -> None:
         "--min-component-area-px",
         type=int,
         default=50,
-        help="Components smaller than this are assigned to Ethane by default.",
+        help="Heuristic classifier only: assign components below this area to Ethane.",
     )
     ap.add_argument(
         "--expected-images",
@@ -113,8 +119,8 @@ def _add_type_arguments(ap: argparse.ArgumentParser) -> None:
     ap.add_argument("--crop-pad-px", type=int, default=16, help="Padding around each component crop before PSD extraction.")
     ap.add_argument("--min-crop-size-px", type=int, default=128, help="Minimum PSD crop size.")
     ap.add_argument("--max-psd-crop-size-px", type=int, default=768, help="Maximum PSD crop size before downsampling.")
-    ap.add_argument("--workers", type=int, default=1, help="Parallel per-image CPU workers (default: 1).")
-    ap.add_argument("--incremental", action="store_true", help="Reuse cached per-image features when inputs and settings are unchanged.")
+    ap.add_argument("--workers", type=int, default=1, help="CPU threads for publication typing, or per-image workers for heuristic typing (default: 1).")
+    ap.add_argument("--incremental", action="store_true", help="Reuse per-image typing when inputs and settings are unchanged.")
     ap.add_argument("--summary-interval", type=float, default=20.0, help="Minimum seconds between live summary/mask updates; always publish the final result.")
 
 
@@ -760,6 +766,9 @@ def _typing_worker_init() -> None:
 
 
 def run(args: argparse.Namespace) -> int:
+    if getattr(args, "classifier", "publication") == "publication":
+        from .publication_runner import run as run_publication
+        return run_publication(args)
     workers = int(getattr(args, "workers", 1))
     interval = float(getattr(args, "summary_interval", 20.0))
     if workers < 1 or not np.isfinite(interval) or interval < 0:

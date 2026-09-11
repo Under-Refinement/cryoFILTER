@@ -268,26 +268,30 @@ cryofilter type \
   --output-dir ./contamination_labels
 ```
 
-For parallel or repeated typing of an expanding manifest, add `--workers 4 --incremental`.
-The feature cache lives in `<output-dir>/.feature_cache/`; it stores small per-image
-feature tables rather than copies of the micrographs. Changes to source file
-paths, sizes or timestamps, manifest values, frequency bands, or typing settings
-invalidate cached features. Run without `--incremental` to force recomputation.
+Typing uses the frozen publication classifier and its matching Git LFS encoder
+by default. See [model installation and validation](../docs/publication_classifier.md).
+For repeated typing of an expanding manifest, add `--workers 4 --incremental`.
+Publication inference uses four CPU threads with this setting and automatically
+uses CUDA when available. Per-image prediction records live in
+`<output-dir>/.publication_cache/`. Changes to input paths, sizes or timestamps,
+manifest values, model artifacts, or inference settings invalidate cached
+predictions. Run without `--incremental` to force recomputation.
 Live summaries are published at most once per 20 seconds by default
 (`--summary-interval`), plus a final update.
 
-Labels use statistics across each dataset, so an earlier image's labels may
-change as new images arrive. cryoFILTER recomputes these statistics from cached
-features and rewrites only masks whose labels or source masks changed. The final
-outputs match typing the complete manifest in one run.
+The publication model predicts each image independently, so new images do not
+change earlier predictions. Completed images and unchanged final outputs are
+reused. The older dataset-dependent heuristic and its `.feature_cache/` remain
+available with `--classifier heuristic`.
 
 CryoSPARC prediction enables cached background typing by default. Use
 `cryofilter cryosparc ... predict ... --num-cpus 8 --typing-workers 2 --live-typing background`
 before the inference `--` separator, or choose `--live-typing final-only` to defer it.
 `--no-run-typing` disables automatic typing. Auto typing workers use up to four
 CPUs, capped by the available CPU allocation; live typing uses at most half the
-CPU budget. Each typing worker uses one math-library thread. `finalize-run`
-also accepts `--typing-workers` and reuses cached features from the original run.
+CPU budget. This setting controls CPU threads for publication inference.
+`finalize-run` also accepts `--typing-workers` and reuses cached predictions
+from the original run.
 
 Outputs:
 

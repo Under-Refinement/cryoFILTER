@@ -48,7 +48,7 @@ gui = ["PySide6>=6.5.0"]
 include = ["cryofilter*", "models*", "utils*"]
 
 [tool.setuptools.package-data]
-cryofilter = ["configs/*.json", "app/static/*"]
+cryofilter = ["configs/*.json", "app/static/*", "data/publication/*.json", "data/publication/*.pt"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

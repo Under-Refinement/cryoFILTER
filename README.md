@@ -29,6 +29,7 @@ git clone https://github.com/Under-Refinement/cryoFILTER.git
 cd cryoFILTER
 conda env create -f environment.yml
 conda activate cryofilter
+git lfs pull --include="cryofilter/data/publication/encoder.pt"
 python -m pip install -e .
 cryoFILTER install-cryosparc-tools
 ```
@@ -63,6 +64,8 @@ Then place the file here:
 ```text
 pretrained_models/cryoFILTER_FULL.pt
 ```
+
+Contamination typing in the UI and `cryoFILTER type` uses the trained publication classifier by default. Its matching frozen feature extractor is included through Git LFS (229 MB) and is separate from the segmentation checkpoint above. Existing installations should run the `git lfs pull` command after updating. [Classifier details, validation, and CLI options](docs/publication_classifier.md).
 
 Use `python -m pip install -e .` without the helper if you do not need CryoSPARC integration. If your cluster requires a specific CUDA build, install the matching PyTorch and torchvision packages before installing cryoFILTER.
 

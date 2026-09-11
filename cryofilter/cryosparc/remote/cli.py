@@ -262,7 +262,7 @@ def add_subparser(subparsers: argparse._SubParsersAction) -> None:
         help="Optional global pixel-size override forwarded to cryofilter type.",
     )
     predict.add_argument("--live-typing", choices=("background", "final-only"), default="background", help="Update types in the background during inference, or type only at finalization.")
-    predict.add_argument("--typing-workers", type=int, default=None, help="Parallel typing processes; auto uses up to 4 CPUs within the CPU budget.")
+    predict.add_argument("--typing-workers", type=int, default=None, help="Publication typing CPU threads; auto uses up to 4 CPUs within the CPU budget.")
     predict.add_argument("--typing-timeout", type=float, default=None, help="Optional timeout for contamination typing.")
     predict.add_argument("--max-overlay-images", type=int, default=10, help="Maximum individual OTF overlays to attach.")
     predict.add_argument("--max-bar-items", type=int, default=30, help="Maximum micrographs to show in the ranked bar chart.")
@@ -335,7 +335,7 @@ def add_subparser(subparsers: argparse._SubParsersAction) -> None:
         default=None,
         help="Optional global pixel-size override forwarded to cryofilter type.",
     )
-    finalize_run.add_argument("--typing-workers", type=int, default=None, help="Parallel typing processes; auto uses up to 4 CPUs.")
+    finalize_run.add_argument("--typing-workers", type=int, default=None, help="Publication typing CPU threads; auto uses up to 4 CPUs.")
     finalize_run.add_argument("--typing-timeout", type=float, default=None, help="Optional timeout for contamination typing.")
     finalize_run.add_argument("--max-overlay-images", type=int, default=10, help="Maximum individual OTF overlays to attach.")
     finalize_run.add_argument("--max-bar-items", type=int, default=30, help="Maximum micrographs to show in the ranked bar chart.")
