@@ -1132,6 +1132,7 @@ def test_live_typing_updater_runs_partial_typing_and_refreshes(tmp_path: Path, m
         typing_pixel_size_angstrom=None,
         typing_timeout=None,
         resource_env={"OMP_NUM_THREADS": "8"},
+        weights_dir=tmp_path / "shared-weights",
     )
 
     updater()
@@ -1151,6 +1152,7 @@ def test_live_typing_updater_runs_partial_typing_and_refreshes(tmp_path: Path, m
 
     assert captured["typing"]["expected_images"] == 2
     assert captured["typing"]["env_overrides"] == {"OMP_NUM_THREADS": "8"}
+    assert captured["typing"]["weights_dir"] == tmp_path / "shared-weights"
     assert callable(captured["typing"]["poll_callback"])
     assert captured["refresh"]["typing_summary_path"] == typing_dir / "summary.json"
     with (local_run_dir / "contamination_typing_manifest.csv").open(encoding="utf-8", newline="") as handle:
@@ -1719,9 +1721,11 @@ def test_predict_orchestrates_prepare_infer_push_and_finalize(
     assert str(captured_diagnostics["typing_summary_path"]).endswith("/typing/summary.json")
 
 
+@pytest.mark.parametrize("checkpoint_arg", ["/models/cryoFILTER.pt", None])
 def test_finalize_run_reuses_local_run_and_runs_typing_by_default(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    checkpoint_arg: str | None,
 ) -> None:
     run_id = "00000000-0000-0000-0000-000000000013"
     local_run_dir = tmp_path / "runs" / run_id
@@ -1731,7 +1735,8 @@ def test_finalize_run_reuses_local_run_and_runs_typing_by_default(
     inference_dir.mkdir(parents=True)
     (transfer_dir / "micrographs" / "7_example.mrc").write_bytes(b"mrc")
     (inference_dir / "inference_summary.json").write_text(
-        json.dumps({"run_id": run_id, "inputs": [], "particle_filtering": {}}),
+        json.dumps({"run_id": run_id, "inputs": [], "particle_filtering": {},
+                    "checkpoint": "/original-weights/cryoFILTER_FULL.pt"}),
         encoding="utf-8",
     )
     transfer_manifest = {
@@ -1807,6 +1812,7 @@ def test_finalize_run_reuses_local_run_and_runs_typing_by_default(
     def fake_run_local_typing(**kwargs):
         output_dir = Path(kwargs["output_dir"])
         captured_typing["output_dir"] = output_dir
+        captured_typing["weights_dir"] = kwargs["weights_dir"]
         output_dir.mkdir(parents=True, exist_ok=True)
         for name in (
             "component_type_assignments.csv",
@@ -1901,7 +1907,7 @@ def test_finalize_run_reuses_local_run_and_runs_typing_by_default(
         remote_run_dir=None,
         remote_transfer_manifest=None,
         model_id="model-a",
-        checkpoint="/models/cryoFILTER.pt",
+        checkpoint=checkpoint_arg,
         threshold=0.6,
         timeout=30.0,
         particle_exclusion_distance_angstrom=100.0,
@@ -1926,6 +1932,7 @@ def test_finalize_run_reuses_local_run_and_runs_typing_by_default(
 
     assert captured_typing["manifest_path"] == local_run_dir / "contamination_typing_manifest.csv"
     assert captured_typing["output_dir"] == local_run_dir / "typing"
+    assert captured_typing["weights_dir"] == Path("/models" if checkpoint_arg else "/original-weights")
     assert captured_typed_overlay_refresh["create_if_missing"] is True
     assert str(captured_diagnostics["typing_summary_path"]).endswith("/typing/summary.json")
     finalize_call = next(call for call in calls if call[0] == "run" and "finalize-prediction" in call[1])

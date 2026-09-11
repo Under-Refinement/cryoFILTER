@@ -1644,6 +1644,7 @@ class _LiveTypingUpdater:
         typing_timeout: float | None,
         resource_env: dict[str, str] | None,
         typing_workers: int = 1,
+        weights_dir: Path | None = None,
     ) -> None:
         manifest = predict_helpers.load_transfer_manifest(local_manifest_file)
         micrographs = manifest.get("micrographs")
@@ -1662,6 +1663,7 @@ class _LiveTypingUpdater:
         self.typing_timeout = typing_timeout
         self.resource_env = resource_env
         self.typing_workers = typing_workers
+        self.weights_dir = weights_dir
         self._thread: threading.Thread | None = None
         self._cancel = threading.Event()
         self._finished = threading.Event()
@@ -1771,6 +1773,7 @@ class _LiveTypingUpdater:
             workers=self.typing_workers,
             incremental=True,
             cancel_event=self._cancel,
+            weights_dir=self.weights_dir,
         )
         self._refresh_available_otfs()
         self.last_images = images
@@ -1865,6 +1868,9 @@ def _finalize_local_run_outputs(
             dataset_id=f"{project_uid}_{workspace_uid}",
         )
         print("Phase: final typing/finalization (GPU inference complete).", flush=True)
+        segmentation_checkpoint = model.get("checkpoint")
+        if not segmentation_checkpoint and inference_summary_file.is_file():
+            segmentation_checkpoint = _load_json_object(inference_summary_file).get("checkpoint")
         typing_command = predict_helpers.run_local_typing(
             manifest_path=typing_manifest_file,
             output_dir=local_typing_dir,
@@ -1876,6 +1882,8 @@ def _finalize_local_run_outputs(
             env_overrides=resource_env,
             workers=_typing_workers(resource_env, typing_workers),
             incremental=True,
+            weights_dir=(Path(segmentation_checkpoint).expanduser().resolve().parent
+                         if segmentation_checkpoint else None),
         )
         typing_summary_path = local_typing_dir / "summary.json"
         if not typing_summary_path.exists():
@@ -2270,6 +2278,8 @@ def _run_predict(args: argparse.Namespace, config: CryoSPARCIntegrationConfig) -
                 typing_timeout=getattr(args, "typing_timeout", None),
                 resource_env=resource_env,
                 typing_workers=live_workers,
+                weights_dir=(Path(args.checkpoint).expanduser().resolve().parent
+                             if args.checkpoint else None),
             )
         print("Phase: GPU inference.", flush=True)
         inference_ok = False

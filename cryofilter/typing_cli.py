@@ -77,7 +77,7 @@ def _add_type_arguments(ap: argparse.ArgumentParser) -> None:
     ap.add_argument("--classifier", choices=("publication", "heuristic"), default="publication",
                     help="Subtype classifier (default: verified publication model).")
     ap.add_argument("--typing-checkpoint", type=Path,
-                    help="Publication encoder.pt; independent of the segmentation checkpoint.")
+                    help="Publication classifier.pt file or its folder; auto-detected from pretrained_models/ by default.")
     ap.add_argument("--typing-device", default="auto", help="Publication typing device: auto, cpu, cuda, or cuda:N.")
     ap.add_argument("--typing-batch-size", type=int, default=16, help="Publication feature-extraction batch size.")
     ap.add_argument("--manifest", type=Path, required=True, help="CSV with dataset_id, stem, micrograph path, and mask path.")

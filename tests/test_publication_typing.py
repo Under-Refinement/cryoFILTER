@@ -164,7 +164,7 @@ def test_missing_lfs_weights_fail_without_falling_back(tmp_path):
     from cryofilter.publication_typing import PublicationClassifier
     pointer = tmp_path / "encoder.pt"
     pointer.write_text("version https://git-lfs.github.com/spec/v1\n")
-    with pytest.raises(FileNotFoundError, match="git lfs pull"):
+    with pytest.raises(FileNotFoundError, match="classifier.pt from https://zenodo.org/records/22700873"):
         PublicationClassifier(checkpoint=pointer, device="cpu")
 
 

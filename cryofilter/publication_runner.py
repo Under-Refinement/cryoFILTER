@@ -11,6 +11,7 @@ import pandas as pd
 from scipy import ndimage as ndi
 
 from . import typing_cli as io
+from .classifier_weights import resolve_classifier_checkpoint
 from .publication_typing import MODEL_DIR, PublicationClassifier
 
 # Increment if preprocessing, inference kernels, or native-mask output changes.
@@ -82,7 +83,10 @@ def run(args):
     if keys.duplicated().any():
         raise ValueError("Manifest contains duplicate dataset_id/stem image IDs")
     metadata = json.loads((MODEL_DIR / "manifest.json").read_text())
-    checkpoint = Path(args.typing_checkpoint).expanduser().resolve() if args.typing_checkpoint else MODEL_DIR / "encoder.pt"
+    checkpoint = resolve_classifier_checkpoint(
+        args.typing_checkpoint, model_dir=MODEL_DIR,
+        search_dirs=(manifest_path.parent / "pretrained_models", manifest_path.parent),
+    )
     fingerprint = io._digest([metadata, [io._file_stamp(MODEL_DIR / name)
                                        for name in ("models.json", "settings.json", "model_config.json")],
                               io._file_stamp(checkpoint) if checkpoint.exists() else str(checkpoint)])
@@ -138,6 +142,7 @@ def run(args):
         io._write_csv_atomic(datasets, output / "dataset_contamination_summary.csv")
         io._write_json_atomic(output / "summary.json", {
             "manifest": str(manifest_path), "classifier": "publication", "model_id": metadata["model_id"],
+            "classifier_checkpoint": str(checkpoint),
             "classifier_manifest_sha256": io._digest(metadata),
             "output_dir": str(output), "normalization_method": "percentile_extra_wide",
             "type_order": list(io.PUBLIC_TYPE_ORDER), "type_to_id": dict(io.PUBLIC_TYPE_TO_ID),

@@ -268,8 +268,11 @@ cryofilter type \
   --output-dir ./contamination_labels
 ```
 
-Typing uses the frozen publication classifier and its matching Git LFS encoder
-by default. See [model installation and validation](../docs/publication_classifier.md).
+Typing uses the frozen publication classifier and the matching `classifier.pt`
+from [Zenodo](https://zenodo.org/records/22700873) by default. Place it in
+`pretrained_models/` in the checkout, beside a custom CryoSPARC segmentation
+checkpoint, or set `CRYOFILTER_CLASSIFIER_CHECKPOINT` to its absolute path.
+See [model installation and validation](../docs/publication_classifier.md).
 For repeated typing of an expanding manifest, add `--workers 4 --incremental`.
 Publication inference uses four CPU threads with this setting and automatically
 uses CUDA when available. Per-image prediction records live in

@@ -23,6 +23,7 @@ include tests/test_annotation_manifest.py
 include tests/test_app_server.py
 include tests/test_batched_patch_psd_inference.py
 include tests/test_browser_annotation.py
+include tests/test_classifier_weights.py
 include tests/test_contamination_subtypes.py
 include tests/test_contamination_typing.py
 include tests/test_cryosparc_diagnostics.py

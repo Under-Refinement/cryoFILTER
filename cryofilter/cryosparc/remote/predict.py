@@ -365,6 +365,7 @@ def run_local_typing(
     workers: int = 1,
     incremental: bool = False,
     cancel_event: Any = None,
+    weights_dir: str | Path | None = None,
 ) -> list[str]:
     """Run cryoFILTER contamination typing on inference masks."""
 
@@ -396,7 +397,9 @@ def run_local_typing(
     env = os.environ.copy()
     if env_overrides:
         env.update({str(key): str(value) for key, value in env_overrides.items()})
-    # Parallelism is across images, not nested BLAS pools within each worker.
+    if weights_dir is not None:
+        env.setdefault("CRYOFILTER_WEIGHTS_DIR", str(Path(weights_dir).expanduser().resolve()))
+    # Publication inference sets its CPU thread count from --workers.
     for name in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
         env[name] = "1"
     _run_polled_command(command, env=env, timeout=timeout, poll_callback=poll_callback,

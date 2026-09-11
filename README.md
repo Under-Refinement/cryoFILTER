@@ -25,11 +25,10 @@ cryoFILTER does not modify raw micrographs or input particle files.
 ## Install
 
 ```bash
-git clone https://github.com/Under-Refinement/cryoFILTER.git
+GIT_LFS_SKIP_SMUDGE=1 git clone https://github.com/Under-Refinement/cryoFILTER.git
 cd cryoFILTER
 conda env create -f environment.yml
 conda activate cryofilter
-git lfs pull --include="cryofilter/data/publication/encoder.pt"
 python -m pip install -e .
 cryoFILTER install-cryosparc-tools
 ```
@@ -53,19 +52,28 @@ install the latest available Tools package:
 python -m pip install -e ".[cryosparc-bridge]"
 ```
 
-Download the released `cryoFILTER_FULL.pt` checkpoint from Zenodo:
+Download **both weight files** from [Zenodo record 22700873](https://zenodo.org/records/22700873) and keep their filenames unchanged. Place them in `pretrained_models/` inside your cryoFILTER checkout:
 
-```text
-https://zenodo.org/records/19560722
+| File | Purpose | Default location |
+|---|---|---|
+| `cryoFILTER_FULL.pt` (688 MB) | Binary contamination segmentation, including the additional membrane training images | `pretrained_models/cryoFILTER_FULL.pt` |
+| `classifier.pt` (229 MB) | Publication contamination subtype classifier | `pretrained_models/classifier.pt` |
+
+From the checkout directory, you can download them directly without Git LFS:
+
+```bash
+mkdir -p pretrained_models &&
+curl --fail --location --retry 3 \
+  'https://zenodo.org/records/22700873/files/cryoFILTER_FULL.pt?download=1' \
+  --output pretrained_models/cryoFILTER_FULL.pt &&
+curl --fail --location --retry 3 \
+  'https://zenodo.org/records/22700873/files/classifier.pt?download=1' \
+  --output pretrained_models/classifier.pt
 ```
 
-Then place the file here:
+The UI, CryoSPARC typing, and `cryoFILTER type` find `classifier.pt` automatically in this folder, including when launched from another working directory. For CryoSPARC runs using a custom segmentation weights folder, place `classifier.pt` beside the selected `cryoFILTER_FULL.pt`. The smaller classifier models and configuration files are included in the package; no separate JSON download is needed.
 
-```text
-pretrained_models/cryoFILTER_FULL.pt
-```
-
-Contamination typing in the UI and `cryoFILTER type` uses the trained publication classifier by default. Its matching frozen feature extractor is included through Git LFS (229 MB) and is separate from the segmentation checkpoint above. Existing installations should run the `git lfs pull` command after updating. [Classifier details, validation, and CLI options](docs/publication_classifier.md).
+For any other folder, set `CRYOFILTER_CLASSIFIER_CHECKPOINT=/absolute/path/to/classifier.pt` before launching the app, or pass `--typing-checkpoint /absolute/path/to/classifier.pt` to `cryoFILTER type`. Existing packaged `encoder.pt` installations remain supported. [Classifier lookup order, validation, and CLI options](docs/publication_classifier.md).
 
 Use `python -m pip install -e .` without the helper if you do not need CryoSPARC integration. If your cluster requires a specific CUDA build, install the matching PyTorch and torchvision packages before installing cryoFILTER.
 

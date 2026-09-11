@@ -6,19 +6,30 @@ The released classifier corresponds to `FINAL_top76_componentpost_aeexpert`, sel
 
 ## Installation
 
-The conda environment includes Git LFS. After cloning or updating:
+Download `classifier.pt` (229 MB) from [Zenodo record 22700873](https://zenodo.org/records/22700873), alongside the `cryoFILTER_FULL.pt` segmentation weights. From your cryoFILTER checkout:
 
 ```bash
-conda activate cryofilter
-git lfs pull --include="cryofilter/data/publication/encoder.pt"
-python -m pip install -e .
+mkdir -p pretrained_models &&
+curl --fail --location --retry 3 \
+  'https://zenodo.org/records/22700873/files/classifier.pt?download=1' \
+  --output pretrained_models/classifier.pt
 ```
 
-For an existing pip environment, install Git LFS using your system's package manager and run the same pull command. The feature extractor is 229 MB. Model loading validates the artifact checksums and fails clearly if weights are missing or incorrect; it does not silently switch to heuristic typing.
+Git LFS is optional. The UI, CryoSPARC typing, and CLI automatically use `pretrained_models/classifier.pt` in the checkout, even when launched from another directory. The small learned regression models and configuration JSON files ship with cryoFILTER. Model loading validates checksums and fails clearly if weights are missing or incorrect; it does not silently switch to heuristic typing.
 
-You can also [download encoder.pt directly](https://media.githubusercontent.com/media/Under-Refinement/cryoFILTER/main/cryofilter/data/publication/encoder.pt) and pass its location with `--typing-checkpoint`. For the UI's default path, place it at `cryofilter/data/publication/encoder.pt` in the checkout.
+Weights are resolved in this order:
 
-The `encoder.pt` file contains exactly the publication feature-extractor tensors with training optimizer data removed. Its SHA256 is `e76443ced11f442878a410b2a3a01279dc0040c48ed36862642301d88e817a6f`. The JSON manifest records the remaining artifact hashes and original checkpoint provenance.
+1. An explicit `--typing-checkpoint` path, or the Python API's `checkpoint` argument.
+2. `CRYOFILTER_CLASSIFIER_CHECKPOINT`, if set. Both explicit options accept a file or a directory containing `classifier.pt`.
+3. `classifier.pt` in `CRYOFILTER_WEIGHTS_DIR`. CryoSPARC supplies the selected segmentation checkpoint's directory automatically unless this variable is already set.
+4. The typing manifest's directory and its `pretrained_models/` subdirectory (CLI), followed by the current working directory and the installed checkout. In each pair, `pretrained_models/classifier.pt` takes precedence over `classifier.pt` directly in that directory.
+5. Packaged `cryofilter/data/publication/classifier.pt`, then the legacy `cryofilter/data/publication/encoder.pt`.
+
+These are direct file checks, not recursive directory scans. For an arbitrary shared weights folder, set `CRYOFILTER_CLASSIFIER_CHECKPOINT=/absolute/path/to/classifier.pt` before launching the UI. Live and final CryoSPARC typing use the same discovery rules. Missing explicit paths fail instead of silently selecting another model.
+
+Existing Git LFS installs can continue using `git lfs pull --include="cryofilter/data/publication/encoder.pt"`. An unmaterialized LFS pointer does not prevent a downloaded `classifier.pt` from being used.
+
+The Zenodo `classifier.pt` is byte-identical to the legacy released `encoder.pt`. It contains exactly the publication feature-extractor tensors with training optimizer data removed. Its SHA256 is `e76443ced11f442878a410b2a3a01279dc0040c48ed36862642301d88e817a6f`. The JSON manifest records the remaining artifact hashes under their original package filenames and the original checkpoint provenance.
 
 The segmentation checkpoint selected in the app controls the binary mask. Subtype feature extraction always uses its own matched publication weights. A different segmentation model can change which contamination pixels are captured, so its combined performance needs separate evaluation.
 
@@ -31,7 +42,7 @@ cryoFILTER type --manifest typing_manifest.csv --output-dir typing \
 
 The manifest needs `dataset_id`, `stem`, micrograph and binary-mask paths, and a valid pixel size from the manifest, override, or MRC header. Micrograph and mask rasters must align. Inputs are resampled to 2 Å/px and normalized with the publication's `percentile_extra_wide` recipe. Typed masks are returned at the supplied image size without labeling clean pixels. Tiny native pixels lost during resampling remain explicitly unclassified and are counted in `unclassified_area_px`.
 
-`--typing-device` accepts `auto`, `cpu`, `cuda`, or `cuda:N`. `auto` uses CUDA when available. `--typing-batch-size` defaults to 16 and is reduced if GPU memory is exhausted; choose a smaller value when sharing a GPU. `--workers` controls CPU threads for publication inference. `--typing-checkpoint` can specify another location for the exact released `encoder.pt`, with checksum verification.
+`--typing-device` accepts `auto`, `cpu`, `cuda`, or `cuda:N`. `auto` uses CUDA when available. `--typing-batch-size` defaults to 16 and is reduced if GPU memory is exhausted; choose a smaller value when sharing a GPU. `--workers` controls CPU threads for publication inference. `--typing-checkpoint` can specify another location for the exact released `classifier.pt`, with checksum verification. `summary.json` records the resolved `classifier_checkpoint` path.
 
 Per-image predictions are cached during live typing. Completed images are reused, modified inputs invalidate their predictions, and repeated finalization does not rewrite unchanged masks. The UI and CryoSPARC retain their background typing flow. This classifier performs more computation than the old heuristic; GPU inference is recommended.
 

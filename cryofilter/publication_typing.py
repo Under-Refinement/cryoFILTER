@@ -18,9 +18,8 @@ from models.bad_region_detector import create_model
 from models.predict import _attach_model_input_metadata, _resolve_checkpoint_model_config
 from utils.fourier_rescale import fourier_rescale_2d
 from utils.image_utils import normalize_image
+from .classifier_weights import MODEL_DIR, ZENODO_RECORD_URL, resolve_classifier_checkpoint
 from .publication_kernels import PairExpertSpec, ScaleSpec, predict_prepared
-
-MODEL_DIR = Path(__file__).resolve().parent / "data" / "publication"
 
 
 class BinaryModel:
@@ -133,16 +132,20 @@ class PublicationClassifier:
         for name in ("models.json", "settings.json", "model_config.json"):
             if file_sha256(self.model_dir / name) != self.metadata["files"][name]["sha256"]:
                 raise ValueError(f"Publication classifier artifact checksum mismatch: {name}")
-        self.checkpoint = Path(checkpoint) if checkpoint else self.model_dir / "encoder.pt"
+        self.checkpoint = resolve_classifier_checkpoint(checkpoint, model_dir=self.model_dir)
         expected = self.metadata["files"]["encoder.pt"]["sha256"]
         if not self.checkpoint.is_file() or self.checkpoint.stat().st_size < 1024:
             raise FileNotFoundError(
-                "Publication classifier weights are missing. Run git lfs pull "
-                "--include='cryofilter/data/publication/encoder.pt' in the repository, "
-                "or pass --typing-checkpoint with the released publication encoder.pt."
+                f"Publication classifier weights are missing at {self.checkpoint}. "
+                f"Download classifier.pt from {ZENODO_RECORD_URL} and place it in "
+                "pretrained_models/ in the cryoFILTER checkout. For another folder, "
+                "set CRYOFILTER_CLASSIFIER_CHECKPOINT or pass --typing-checkpoint. "
+                "Existing Git LFS installations can also run git lfs pull "
+                "--include='cryofilter/data/publication/encoder.pt'."
             )
         if file_sha256(self.checkpoint) != expected:
-            raise ValueError("The subtype classifier requires its exact publication encoder.pt; "
+            raise ValueError("The subtype classifier requires the exact publication classifier.pt "
+                             "(legacy filename encoder.pt); "
                              "the segmentation FULL checkpoint is not interchangeable.")
         if device == "auto":
             device = "cuda" if torch.cuda.is_available() else "cpu"
