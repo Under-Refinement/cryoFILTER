@@ -290,11 +290,53 @@ available with `--classifier heuristic`.
 CryoSPARC prediction enables cached background typing by default. Use
 `cryofilter cryosparc ... predict ... --num-cpus 8 --typing-workers 2 --live-typing background`
 before the inference `--` separator, or choose `--live-typing final-only` to defer it.
-`--no-run-typing` disables automatic typing. Auto typing workers use up to four
-CPUs, capped by the available CPU allocation; live typing uses at most half the
-CPU budget. This setting controls CPU threads for publication inference.
-`finalize-run` also accepts `--typing-workers` and reuses cached predictions
-from the original run.
+`--no-run-typing` disables automatic typing. Leave `--num-cpus` unset to auto-detect
+all CPUs available on the machine minus 2. Auto typing workers scale with that CPU
+budget instead of a fixed count; live typing uses at most half the budget so GPU
+inference keeps the other half. This setting controls CPU threads for publication
+inference. `finalize-run` also accepts `--typing-workers` and reuses cached
+predictions from the original run.
+
+With `--num-gpus 2` or more, live typing runs on its own dedicated GPU(s) instead of
+sharing segmentation's, so the publication classifier never contends with inference
+for GPU memory: the GPUs are split roughly in half, with typing getting the larger
+(or equal) share (2 -> 1 segmentation/1 typing, 3 -> 1/2, 4 -> 2/2, ...). When typing
+gets more than one GPU it runs as several concurrent per-GPU shards (each classifying
+a disjoint slice of the pending images via `--shard-index`/`--shard-count`), followed
+by one cheap, model-free aggregation pass that republishes the combined summary/CSVs.
+With exactly `--num-gpus 1`, there is no spare device to dedicate to typing without
+contention, and CPU-only typing has not been fast enough to make meaningful live
+progress, so typing runs once, uncontended, right after inference finishes instead of
+live in the background.
+
+Per-image typing cost scales with how much of the micrograph is contaminated: the
+classifier samples a grid point every `sample_stride_px` across all contaminated
+area, computing a CNN embedding and a set of handcrafted (FFT/gradient/structure-tensor)
+features at each point - a heavily-contaminated image can have tens of thousands of grid
+points. The handcrafted-feature step parallelizes across `--typing-workers` CPU threads
+(each grid point's features are independent, so this is safe - identical results either
+way, just scheduled concurrently instead of one point at a time). `--typing-batch-size`
+(default 32) controls how many grid points go through the CNN together per GPU call;
+raising it is also a pure speed knob (the model uses GroupNorm, not batch-dependent
+normalization) and automatically halves on GPU out-of-memory.
+
+`sample_stride_px` defaults to **64** (raised from the original 16 on 2026-09-12, the
+"fast typing" default). Measured on the full 158-image held-out validation set (same
+set/methodology as the model's published accuracy number):
+
+| `sample_stride_px` | avg seconds/image | vs. stride=16 | pooled subtype accuracy | accuracy vs. stride=16 |
+|---|---|---|---|---|
+| 16 (original) | 50.30s | 1x | 0.8009 | - |
+| 32 | 13.66s | 3.7x faster | 0.7961 | -0.5pp |
+| **64 (default)** | **5.31s** | **9.5x faster** | **0.7825** | **-1.8pp** |
+| 128 | 2.92s | 17.2x faster | 0.7463 | -5.5pp |
+
+64 was chosen because it already comfortably beats segmentation's own per-image cost
+(~12.8s on a dedicated GPU), so there is no wall-clock reason to push further - and 128's
+accuracy drop is a real, consistent effect across every validation shard rather than
+noise. 16 and 32 remain available by setting `--typing-sample-stride-px` explicitly if
+you want to trade speed back for the original fidelity (e.g. for a final/publication-
+quality pass on a small number of images).
 
 Outputs:
 

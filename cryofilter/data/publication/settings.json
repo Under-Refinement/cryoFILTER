@@ -42,7 +42,7 @@
   "corner_rescue_max_crystalline_margin": 0.35,
   "corner_rescue_boost": 1.75,
   "run_soft_eval": true,
-  "sample_stride_px": 16,
+  "sample_stride_px": 64,
   "grid_offsets_px": [
     [
       0,

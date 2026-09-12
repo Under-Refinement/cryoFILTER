@@ -15,7 +15,7 @@
       "bytes": 188323
     },
     "settings.json": {
-      "sha256": "6ccf4c9b3930929352ce7a9e16c95a824c3deae8c615dd1a2a54f211e03c57ea",
+      "sha256": "4ea1ca66ac8cfae963b98a4b57722cfbe13f413a6ddcdf452ce1e6fbf24e4663",
       "bytes": 3436
     },
     "model_config.json": {
@@ -27,9 +27,10 @@
       "bytes": 229257898
     }
   },
-  "saved_validation_accuracy": 0.8008518152333487,
+  "saved_validation_accuracy": 0.7825191709673724,
   "saved_validation_images": 158,
   "metric": "pixel subtype accuracy conditional on captured labeled contamination",
+  "notes": "sample_stride_px raised from 16 to 64 on 2026-09-12 (fast_typing default): ~9.5x faster typing (avg 5.31s/image vs 50.30s/image on the full 158-image validation set) for a small, consistent accuracy cost (pooled accuracy 0.8009 -> 0.7825, -1.8pp). See docs_for_expert_users/README.md for the full stride/speed/accuracy sweep (16/32/64/128).",
   "source_artifact_sha256": {
     "patch_model.joblib": "a1f75c8934eb2480ed70d20ec44f303f553503d375e6f641a0296d4473def6bb",
     "patch_model_rescue.joblib": "3f2855b7c2cc27a5879945c74a6e4d60a7ff50d582aab496972497df9ef9a726",

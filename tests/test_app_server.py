@@ -308,6 +308,7 @@ def test_cryosparc_predict_job_spec_uses_typing_default(tmp_path: Path) -> None:
             "inference_profile": "balanced",
             "num_cpus": "8",
             "typing_workers": "3",
+            "typing_sample_stride_px": "16",
             "live_typing": "final-only",
             "num_gpus": "1",
         },
@@ -342,10 +343,31 @@ def test_cryosparc_predict_job_spec_uses_typing_default(tmp_path: Path) -> None:
     assert spec.metadata["run_id"] == run_id
     assert spec.metadata["local_run_dir"] == tmp_path / "runs" / run_id
     assert spec.artifact_roots == [tmp_path / "runs" / run_id]
+    assert spec.metadata["typing_sample_stride_px"] == "16"
 
     parsed = _build_parser().parse_args(argv[3:])
     assert parsed.live_typing == "final-only"
     assert parsed.typing_workers == 3
+    assert parsed.typing_sample_stride_px == 16
+
+
+def test_cryosparc_predict_job_spec_omits_typing_stride_by_default(tmp_path: Path) -> None:
+    spec = build_job_spec(
+        "cryosparc_predict",
+        {
+            "project": "P280",
+            "workspace": "W5",
+            "micrographs": "J76:micrographs",
+            "particles": "J76:particles",
+            "checkpoint": "pretrained_models/cryoFILTER_FULL.pt",
+            "local_run_root": str(tmp_path / "runs"),
+        },
+        work_dir=tmp_path,
+    )
+    argv = spec.steps[0].argv
+    assert "--typing-sample-stride-px" not in argv
+    parsed = _build_parser().parse_args(argv[3:])
+    assert parsed.typing_sample_stride_px is None
 
 
 def test_cryosparc_predict_job_spec_forwards_output_options(tmp_path: Path) -> None:

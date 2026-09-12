@@ -23,8 +23,10 @@ from cryofilter.cli import (
     DEFAULT_PUBLIC_NORMALIZATION_METHOD,
     DEFAULT_PUBLIC_OVERLAP,
     DEFAULT_PUBLIC_TARGET_PIXEL_SIZE,
+    _apply_infer_resource_args,
     _cpu_threads_per_gpu_worker,
     _build_parser,
+    _default_num_cpus,
     _default_output_dir_for_input,
     _merge_worker_summaries,
     _multi_gpu_worker,
@@ -431,6 +433,33 @@ def test_multi_gpu_infer_treats_num_cpus_as_total_worker_budget(tmp_path: Path, 
     assert os.environ["OMP_NUM_THREADS"] == "8"
     assert [payload["num_cpus"] for payload in worker_payloads] == [8, 8, 8, 8]
     assert finalized["summary"]["multi_gpu"]["assignments"][0]["cpu_threads"] == 8
+
+
+def test_infer_num_cpus_defaults_to_all_available_minus_two(monkeypatch) -> None:
+    import cryofilter.cli as cli_module
+
+    monkeypatch.setattr(cli_module.os, "sched_getaffinity", lambda _: set(range(16)), raising=False)
+    monkeypatch.delenv("CRYOFILTER_NUM_CPUS", raising=False)
+    monkeypatch.delenv("SLURM_CPUS_PER_TASK", raising=False)
+    monkeypatch.delenv("OMP_NUM_THREADS", raising=False)
+
+    assert _default_num_cpus() == 14
+
+    args = _build_parser().parse_args(
+        ["infer", "--input", "in", "--output-dir", "out"]
+    )
+    assert args.num_cpus is None
+    resolved = _apply_infer_resource_args(args)
+    assert resolved["num_cpus"] == 14
+    assert args.num_cpus == 14
+    assert os.environ["OMP_NUM_THREADS"] == "14"
+
+    # An explicit --num-cpus is never overridden by the auto-detected budget.
+    args_explicit = _build_parser().parse_args(
+        ["infer", "--input", "in", "--output-dir", "out", "--num-cpus", "3"]
+    )
+    _apply_infer_resource_args(args_explicit)
+    assert args_explicit.num_cpus == 3
 
 
 def test_default_output_dir_is_derived_from_input_path(tmp_path) -> None:

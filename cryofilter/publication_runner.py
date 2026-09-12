@@ -65,10 +65,22 @@ def run(args):
     interval = float(args.summary_interval)
     if workers < 1 or not np.isfinite(interval) or interval < 0:
         raise ValueError("Workers must be positive and summary interval finite and nonnegative")
+    shard_index = int(getattr(args, "shard_index", 0) or 0)
+    shard_count = int(getattr(args, "shard_count", 1) or 1)
+    if shard_count < 1 or not (0 <= shard_index < shard_count):
+        raise ValueError("--shard-index must be within [0, --shard-count)")
+    # Sharded workers only classify their own images and write per-image cache/typed-mask
+    # files; they never touch the shared summary/CSV outputs (that would race with other
+    # shards writing the same paths). Only the non-sharded aggregation pass (shard-count=1,
+    # the default) publishes - see run_local_typing_multi_gpu in cryosparc/remote/predict.py.
+    publish_enabled = shard_count <= 1
     if args.normalization_method != "percentile_extra_wide":
         raise ValueError("The publication classifier requires percentile_extra_wide normalization")
     if int(args.typing_batch_size) < 1:
         raise ValueError("Typing batch size must be positive")
+    stride_override = getattr(args, "typing_sample_stride_px", None)
+    if stride_override is not None and int(stride_override) < 1:
+        raise ValueError("Typing sample stride must be positive")
     manifest_path = args.manifest.expanduser().resolve()
     output = args.output_dir.expanduser().resolve()
     output.mkdir(parents=True, exist_ok=True)
@@ -102,12 +114,20 @@ def run(args):
             paths.append(io._file_stamp(io._resolve_path(manifest_path.parent, row[column])))
         return io._digest([PUBLICATION_CACHE_VERSION, fingerprint, paths, {str(k): str(v) for k, v in row.items()},
                            args.pixel_size_angstrom, args.normalization_method,
-                           args.typing_batch_size, args.typing_device])
+                           args.typing_batch_size, args.typing_device, stride_override])
 
     signatures = [signature(row) for row in rows]
+    # Partition a *fixed* index range across shards, not the cache-filtered pending list -
+    # slicing pending directly would make the split depend on how much each shard has
+    # already cached by the time it starts, silently dropping or duplicating images.
+    assigned_indices = (
+        set(range(len(rows))[shard_index::shard_count]) if shard_count > 1 else None
+    )
     records = {}
     pending = []
     for index, key in enumerate(keys):
+        if assigned_indices is not None and index not in assigned_indices:
+            continue
         path = masks_dir / f"{key}_typed_mask.npy"
         cached = io._read_cache(cache_dir / f"{io._digest(key)}.json") if args.incremental else {}
         if (cached.get("signature") == signatures[index] and path.exists()
@@ -116,13 +136,17 @@ def run(args):
             records[index] = cached
         else:
             pending.append(index)
-    print(f"Publication typing: {len(records)} cached, {len(pending)} new/changed image(s).", flush=True)
+    if shard_count > 1:
+        print(f"Publication typing shard {shard_index + 1}/{shard_count}: "
+              f"{len(records)} cached, {len(pending)} image(s) assigned to this shard.", flush=True)
+    else:
+        print(f"Publication typing: {len(records)} cached, {len(pending)} new/changed image(s).", flush=True)
     run_signature = io._digest([signatures, expected, str(manifest_path)])
     summary_files = [output / name for name in ("summary.json", "component_type_assignments.csv",
                                                 "image_contamination_summary.csv", "dataset_contamination_summary.csv")]
     state_path = cache_dir / "published.json"
     state = io._read_cache(state_path) if args.incremental else {}
-    if (not pending and state.get("signature") == run_signature
+    if (publish_enabled and not pending and state.get("signature") == run_signature
             and all(path.exists() for path in summary_files)
             and state.get("summary_stamps") == [io._file_stamp(path) for path in summary_files]):
         print("Publication typing already current; reused published outputs.", flush=True)
@@ -162,7 +186,7 @@ def run(args):
 
     classifier = None
     last_publish = time.monotonic()
-    if records and pending:
+    if publish_enabled and records and pending:
         publish()
     for index in pending:
         row = rows[index]
@@ -177,7 +201,9 @@ def run(args):
             import torch
             torch.set_num_threads(workers)
             classifier = PublicationClassifier(checkpoint=checkpoint, device=args.typing_device,
-                                                batch_size=args.typing_batch_size)
+                                                batch_size=args.typing_batch_size, cpu_workers=workers)
+            if stride_override is not None:
+                classifier.kwargs["sample_stride_px"] = int(stride_override)
         result = classifier.predict(image, mask, px)
         if signature(row) != signatures[index]:
             raise ValueError(f"Typing inputs changed while reading {key}; retry after inference finishes")
@@ -188,8 +214,12 @@ def run(args):
                   "summary": summary, "components": components}
         records[index] = record
         io._write_json_atomic(cache_dir / f"{io._digest(key)}.json", record)
-        if len(records) < len(rows) and time.monotonic() - last_publish >= interval:
+        if publish_enabled and len(records) < len(rows) and time.monotonic() - last_publish >= interval:
             publish()
             last_publish = time.monotonic()
-    publish(final=True)
+    if publish_enabled:
+        publish(final=True)
+    else:
+        print(f"Publication typing shard {shard_index + 1}/{shard_count} complete: "
+              f"{len(pending)} image(s) processed.", flush=True)
     return 0

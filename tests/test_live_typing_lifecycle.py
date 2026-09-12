@@ -117,3 +117,36 @@ def test_worker_budget_respects_cpu_allocation(monkeypatch):
     assert cli._typing_workers({"CRYOFILTER_NUM_CPUS": "1"}, None) == 1
     with pytest.raises(ValueError, match="typing-workers"):
         cli._validate_typing_options(argparse.Namespace(typing_workers=0))
+
+
+def test_auto_typing_workers_scale_with_cpu_budget_instead_of_fixed_cap(monkeypatch):
+    # A large CryoSPARC CPU allocation should let typing use far more than the old
+    # hardcoded 4-worker cap when --typing-workers is left unset.
+    monkeypatch.setattr(cli.os, "sched_getaffinity", lambda _: set(range(64)), raising=False)
+    monkeypatch.delenv("SLURM_CPUS_PER_TASK", raising=False)
+    assert cli._typing_workers({"CRYOFILTER_NUM_CPUS": "24"}, None, live=False) == 24
+    assert cli._typing_workers({"CRYOFILTER_NUM_CPUS": "24"}, None, live=True) == 12
+    # An explicit request is still capped by the available budget, live or not.
+    assert cli._typing_workers({"CRYOFILTER_NUM_CPUS": "24"}, 100, live=False) == 24
+    assert cli._typing_workers({"CRYOFILTER_NUM_CPUS": "24"}, 100, live=True) == 12
+
+
+def test_default_num_cpus_leaves_two_cores_free(monkeypatch):
+    monkeypatch.setattr(cli.os, "sched_getaffinity", lambda _: set(range(24)), raising=False)
+    monkeypatch.delenv("CRYOFILTER_NUM_CPUS", raising=False)
+    monkeypatch.delenv("SLURM_CPUS_PER_TASK", raising=False)
+
+    args = argparse.Namespace(num_cpus=None)
+    cli._default_num_cpus_if_unset(args)
+    assert args.num_cpus == 22
+
+    # An explicit value is left untouched.
+    args_explicit = argparse.Namespace(num_cpus=8)
+    cli._default_num_cpus_if_unset(args_explicit)
+    assert args_explicit.num_cpus == 8
+
+    # The reserve never drives the budget below one CPU.
+    monkeypatch.setattr(cli.os, "sched_getaffinity", lambda _: {0}, raising=False)
+    args_single = argparse.Namespace(num_cpus=None)
+    cli._default_num_cpus_if_unset(args_single)
+    assert args_single.num_cpus == 1

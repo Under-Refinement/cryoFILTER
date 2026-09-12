@@ -216,6 +216,52 @@ def _run_polled_command(command: list[str], *, env: dict[str, str], timeout: flo
     refresh()
 
 
+def _run_polled_commands(commands: Sequence[list[str]], *, envs: Sequence[dict[str, str]], timeout: float | None,
+                         poll_callback: Callable[[], None] | None, poll_interval: float,
+                         cancel_event: Any = None) -> None:
+    """Run multiple commands concurrently (one dedicated-GPU typing shard each), polling
+    until all finish. Mirrors _run_polled_command's cancel/timeout/poll semantics."""
+    if len(commands) != len(envs):
+        raise ValueError("commands and envs must have the same length")
+    if cancel_event is not None and cancel_event.is_set():
+        raise RuntimeError("Live typing canceled")
+    processes = [
+        subprocess.Popen(command, env=env, start_new_session=(os.name == "posix"))
+        for command, env in zip(commands, envs)
+    ]
+    deadline = None if timeout is None else time.monotonic() + float(timeout)
+    last_poll = 0.0
+
+    def refresh() -> None:
+        if poll_callback is not None:
+            try:
+                poll_callback()
+            except Exception as exc:
+                print(f"Warning: live update skipped: {type(exc).__name__}: {exc}", flush=True)
+
+    try:
+        while any(process.poll() is None for process in processes):
+            now = time.monotonic()
+            if cancel_event is not None and cancel_event.is_set():
+                raise RuntimeError("Live typing canceled")
+            if deadline is not None and now >= deadline:
+                raise subprocess.TimeoutExpired(commands, timeout)
+            if now - last_poll >= max(0.5, float(poll_interval)):
+                refresh()
+                last_poll = now
+            time.sleep(0.2)
+        failed = [(command, process.returncode) for command, process in zip(commands, processes)
+                  if process.returncode != 0]
+        if failed:
+            command, returncode = failed[0]
+            raise subprocess.CalledProcessError(returncode, command)
+    except BaseException:
+        for process in processes:
+            _stop_local_process(process)
+        raise
+    refresh()
+
+
 def run_local_inference(
     *,
     input_dir: str | Path,
@@ -350,7 +396,7 @@ def write_typing_manifest_from_transfer(
     }
 
 
-def run_local_typing(
+def _build_typing_command_and_env(
     *,
     manifest_path: str | Path,
     output_dir: str | Path,
@@ -358,17 +404,15 @@ def run_local_typing(
     min_component_area_px: int | None = None,
     pixel_size_angstrom: float | None = None,
     expected_images: int | None = None,
-    timeout: float | None = None,
     env_overrides: Mapping[str, str] | None = None,
-    poll_callback: Callable[[], None] | None = None,
-    poll_interval: float = 5.0,
     workers: int = 1,
     incremental: bool = False,
-    cancel_event: Any = None,
     weights_dir: str | Path | None = None,
-) -> list[str]:
-    """Run cryoFILTER contamination typing on inference masks."""
-
+    typing_device: str | None = None,
+    shard_index: int | None = None,
+    shard_count: int | None = None,
+    sample_stride_px: int | None = None,
+) -> tuple[list[str], dict[str, str]]:
     command = [
         sys.executable,
         "-m",
@@ -387,13 +431,14 @@ def run_local_typing(
     if expected_images is not None:
         command.extend(["--expected-images", str(int(expected_images))])
     command.extend(["--workers", str(int(workers))])
+    if typing_device:
+        command.extend(["--typing-device", str(typing_device)])
+    if shard_count is not None and int(shard_count) > 1:
+        command.extend(["--shard-index", str(int(shard_index or 0)), "--shard-count", str(int(shard_count))])
+    if sample_stride_px is not None:
+        command.extend(["--typing-sample-stride-px", str(int(sample_stride_px))])
     if incremental:
         command.append("--incremental")
-    print(
-        "Running contamination typing; 4-panel OTF images will refresh as typing outputs are written.",
-        flush=True,
-    )
-    print("Executing:", " ".join(shlex.quote(part) for part in command), flush=True)
     env = os.environ.copy()
     if env_overrides:
         env.update({str(key): str(value) for key, value in env_overrides.items()})
@@ -402,9 +447,126 @@ def run_local_typing(
     # Publication inference sets its CPU thread count from --workers.
     for name in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
         env[name] = "1"
+    return command, env
+
+
+def run_local_typing(
+    *,
+    manifest_path: str | Path,
+    output_dir: str | Path,
+    normalization_method: str | None = None,
+    min_component_area_px: int | None = None,
+    pixel_size_angstrom: float | None = None,
+    expected_images: int | None = None,
+    timeout: float | None = None,
+    env_overrides: Mapping[str, str] | None = None,
+    poll_callback: Callable[[], None] | None = None,
+    poll_interval: float = 5.0,
+    workers: int = 1,
+    incremental: bool = False,
+    cancel_event: Any = None,
+    weights_dir: str | Path | None = None,
+    typing_device: str | None = None,
+    sample_stride_px: int | None = None,
+) -> list[str]:
+    """Run cryoFILTER contamination typing on inference masks."""
+
+    command, env = _build_typing_command_and_env(
+        manifest_path=manifest_path, output_dir=output_dir, normalization_method=normalization_method,
+        min_component_area_px=min_component_area_px, pixel_size_angstrom=pixel_size_angstrom,
+        expected_images=expected_images, env_overrides=env_overrides, workers=workers,
+        incremental=incremental, weights_dir=weights_dir, typing_device=typing_device,
+        sample_stride_px=sample_stride_px,
+    )
+    print(
+        "Running contamination typing; 4-panel OTF images will refresh as typing outputs are written.",
+        flush=True,
+    )
+    print("Executing:", " ".join(shlex.quote(part) for part in command), flush=True)
     _run_polled_command(command, env=env, timeout=timeout, poll_callback=poll_callback,
                         poll_interval=poll_interval, cancel_event=cancel_event)
     return command
+
+
+def run_local_typing_multi_gpu(
+    *,
+    manifest_path: str | Path,
+    output_dir: str | Path,
+    typing_gpu_devices: Sequence[str],
+    normalization_method: str | None = None,
+    min_component_area_px: int | None = None,
+    pixel_size_angstrom: float | None = None,
+    expected_images: int | None = None,
+    timeout: float | None = None,
+    env_overrides: Mapping[str, str] | None = None,
+    poll_callback: Callable[[], None] | None = None,
+    poll_interval: float = 5.0,
+    workers: int = 1,
+    incremental: bool = False,
+    cancel_event: Any = None,
+    weights_dir: str | Path | None = None,
+    sample_stride_px: int | None = None,
+) -> list[list[str]]:
+    """Shard publication typing across one or more dedicated GPUs so it never contends
+    with GPU inference for memory, then run one more (model-free) invocation to
+    aggregate every shard's already-cached results into the shared summary/CSV outputs.
+
+    Falls back to a single ordinary run when given 0 or 1 devices (0 -> CPU, matching
+    the num-gpus == 1 case where there is no spare GPU to dedicate to typing).
+    """
+    devices = [str(device) for device in typing_gpu_devices]
+    if len(devices) <= 1:
+        base_env = dict(env_overrides or {})
+        typing_device = "cpu"
+        if devices:
+            base_env["CUDA_VISIBLE_DEVICES"] = devices[0]
+            typing_device = "cuda:0"
+        command = run_local_typing(
+            manifest_path=manifest_path, output_dir=output_dir, normalization_method=normalization_method,
+            min_component_area_px=min_component_area_px, pixel_size_angstrom=pixel_size_angstrom,
+            expected_images=expected_images, timeout=timeout, env_overrides=base_env,
+            poll_callback=poll_callback, poll_interval=poll_interval, workers=workers,
+            incremental=incremental, cancel_event=cancel_event, weights_dir=weights_dir,
+            typing_device=typing_device, sample_stride_px=sample_stride_px,
+        )
+        return [command]
+
+    shard_count = len(devices)
+    commands: list[list[str]] = []
+    envs: list[dict[str, str]] = []
+    for shard_index, device_token in enumerate(devices):
+        command, env = _build_typing_command_and_env(
+            manifest_path=manifest_path, output_dir=output_dir, normalization_method=normalization_method,
+            min_component_area_px=min_component_area_px, pixel_size_angstrom=pixel_size_angstrom,
+            expected_images=expected_images, env_overrides=env_overrides, workers=workers,
+            incremental=incremental, weights_dir=weights_dir, typing_device="cuda:0",
+            shard_index=shard_index, shard_count=shard_count, sample_stride_px=sample_stride_px,
+        )
+        env["CUDA_VISIBLE_DEVICES"] = device_token
+        commands.append(command)
+        envs.append(env)
+    print(
+        f"Running contamination typing across {shard_count} dedicated GPU(s) (device(s) "
+        f"{', '.join(devices)}); 4-panel OTF images will refresh once each shard's images "
+        "are typed and the results are aggregated.",
+        flush=True,
+    )
+    for command in commands:
+        print("Executing:", " ".join(shlex.quote(part) for part in command), flush=True)
+    _run_polled_commands(commands, envs=envs, timeout=timeout, poll_callback=poll_callback,
+                         poll_interval=poll_interval, cancel_event=cancel_event)
+    # Every image is now cached by its shard worker; this call finds nothing pending, so
+    # it never loads the classifier - it just republishes the combined summary/CSVs.
+    aggregate_command = run_local_typing(
+        manifest_path=manifest_path, output_dir=output_dir, normalization_method=normalization_method,
+        min_component_area_px=min_component_area_px, pixel_size_angstrom=pixel_size_angstrom,
+        expected_images=expected_images, timeout=timeout, env_overrides=env_overrides,
+        poll_callback=None, poll_interval=poll_interval, workers=workers, incremental=incremental,
+        cancel_event=cancel_event, weights_dir=weights_dir, typing_device="cuda:0",
+        sample_stride_px=sample_stride_px,
+    )
+    commands.append(aggregate_command)
+    return commands
 
 
 def classify_particles_from_manifest(

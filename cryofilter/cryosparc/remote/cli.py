@@ -210,7 +210,10 @@ def add_subparser(subparsers: argparse._SubParsersAction) -> None:
         "--num-cpus",
         type=int,
         default=None,
-        help="Optional CPU thread count for local inference and typing subprocesses.",
+        help=(
+            "Optional CPU thread count for local inference and typing subprocesses. "
+            "Leave unset to auto-detect all available CPUs minus 2."
+        ),
     )
     predict.add_argument(
         "--num-gpus",
@@ -263,8 +266,15 @@ def add_subparser(subparsers: argparse._SubParsersAction) -> None:
         help="Optional global pixel-size override forwarded to cryofilter type.",
     )
     predict.add_argument("--live-typing", choices=("background", "final-only"), default="background", help="Update types in the background during inference, or type only at finalization.")
-    predict.add_argument("--typing-workers", type=int, default=None, help="Publication typing CPU threads; auto uses up to 4 CPUs within the CPU budget.")
+    predict.add_argument("--typing-workers", type=int, default=None, help="Publication typing CPU threads; auto scales with the CPU budget (half the budget while live background typing runs alongside inference).")
     predict.add_argument("--typing-timeout", type=float, default=None, help="Optional timeout for contamination typing.")
+    predict.add_argument(
+        "--typing-sample-stride-px", type=int, default=None,
+        help="Publication classifier grid-sampling stride in pixels (default: the shipped "
+             "model's default, 64 - 'fast typing', ~9.5x faster than the original 16 for a "
+             "small, consistent accuracy cost measured on the full held-out validation set). "
+             "Lower values (e.g. 32 or 16) trade speed back for higher accuracy.",
+    )
     predict.add_argument("--max-overlay-images", type=int, default=10, help="Maximum individual OTF overlays to attach.")
     predict.add_argument("--max-bar-items", type=int, default=30, help="Maximum micrographs to show in the ranked bar chart.")
     predict.add_argument(
@@ -296,7 +306,10 @@ def add_subparser(subparsers: argparse._SubParsersAction) -> None:
         "--num-cpus",
         type=int,
         default=None,
-        help="Optional CPU thread count for contamination typing subprocesses.",
+        help=(
+            "Optional CPU thread count for contamination typing subprocesses. "
+            "Leave unset to auto-detect all available CPUs minus 2."
+        ),
     )
     finalize_run.add_argument(
         "--particle-exclusion-distance-angstrom",
@@ -336,8 +349,14 @@ def add_subparser(subparsers: argparse._SubParsersAction) -> None:
         default=None,
         help="Optional global pixel-size override forwarded to cryofilter type.",
     )
-    finalize_run.add_argument("--typing-workers", type=int, default=None, help="Publication typing CPU threads; auto uses up to 4 CPUs.")
+    finalize_run.add_argument("--typing-workers", type=int, default=None, help="Publication typing CPU threads; auto scales with the CPU budget.")
     finalize_run.add_argument("--typing-timeout", type=float, default=None, help="Optional timeout for contamination typing.")
+    finalize_run.add_argument(
+        "--typing-sample-stride-px", type=int, default=None,
+        help="Publication classifier grid-sampling stride in pixels (default: the shipped "
+             "model's default, 64 - 'fast typing'). Lower values (e.g. 32 or 16) trade speed "
+             "back for higher accuracy.",
+    )
     finalize_run.add_argument("--max-overlay-images", type=int, default=10, help="Maximum individual OTF overlays to attach.")
     finalize_run.add_argument("--max-bar-items", type=int, default=30, help="Maximum micrographs to show in the ranked bar chart.")
 
@@ -1619,10 +1638,40 @@ def _local_cpu_budget(resource_env: dict[str, str] | None) -> int:
     return max(1, available)
 
 
+CPU_AUTO_RESERVE_CORES = 2
+
+
+def _default_num_cpus_if_unset(args: argparse.Namespace) -> None:
+    """When --num-cpus is left blank, claim every detected CPU minus a small reserve
+    instead of leaving inference/typing CPU threading unbounded. Runs before
+    `_local_resource_env()` so the chosen budget is what gets split between GPU
+    inference and background typing, and what gets forwarded to the `infer` subprocess."""
+    if getattr(args, "num_cpus", None) is not None:
+        return
+    args.num_cpus = max(1, _local_cpu_budget(None) - CPU_AUTO_RESERVE_CORES)
+
+
 def _typing_workers(resource_env: dict[str, str] | None, requested: int | None, *, live: bool = False) -> int:
     available = _local_cpu_budget(resource_env)
     budget = max(1, available // 2) if live else available
-    return max(1, min(budget, int(requested) if requested is not None else 4))
+    if requested is not None:
+        return max(1, min(budget, int(requested)))
+    # Auto: scale with the CPU budget instead of capping at a fixed worker count,
+    # so a large CryoSPARC allocation actually gets used for typing.
+    return budget
+
+
+def _split_gpus_for_segmentation_and_typing(num_gpus: int) -> tuple[list[int], list[int]]:
+    """Split local GPU indices [0, num_gpus) between segmentation and background typing
+    so live typing never has to share a device with GPU inference. Typing gets the larger
+    (or equal) half when the count is odd, since the publication classifier's per-image
+    cost has looked considerably higher than segmentation's in practice. With 0 or 1 GPUs
+    there is nothing to dedicate to typing without contending with segmentation."""
+    total = max(0, int(num_gpus))
+    if total < 2:
+        return list(range(total)), []
+    seg_count = total // 2
+    return list(range(seg_count)), list(range(seg_count, total))
 
 
 class _LiveTypingUpdater:
@@ -1645,6 +1694,8 @@ class _LiveTypingUpdater:
         resource_env: dict[str, str] | None,
         typing_workers: int = 1,
         weights_dir: Path | None = None,
+        typing_gpu_devices: Sequence[str] = (),
+        typing_sample_stride_px: int | None = None,
     ) -> None:
         manifest = predict_helpers.load_transfer_manifest(local_manifest_file)
         micrographs = manifest.get("micrographs")
@@ -1664,6 +1715,8 @@ class _LiveTypingUpdater:
         self.resource_env = resource_env
         self.typing_workers = typing_workers
         self.weights_dir = weights_dir
+        self.typing_gpu_devices = list(typing_gpu_devices)
+        self.typing_sample_stride_px = typing_sample_stride_px
         self._thread: threading.Thread | None = None
         self._cancel = threading.Event()
         self._finished = threading.Event()
@@ -1759,9 +1812,13 @@ class _LiveTypingUpdater:
             f"Live typing update: {images}/{self.expected_images or images} completed mask(s) ready.",
             flush=True,
         )
-        predict_helpers.run_local_typing(
+        # Dedicated typing GPU(s) (self.typing_gpu_devices) avoid the memory contention
+        # that comes from sharing a device with active GPU inference; falls back to CPU
+        # when none are available (see _split_gpus_for_segmentation_and_typing).
+        predict_helpers.run_local_typing_multi_gpu(
             manifest_path=self.typing_manifest_file,
             output_dir=self.local_typing_dir,
+            typing_gpu_devices=self.typing_gpu_devices,
             normalization_method=self.typing_normalization_method,
             min_component_area_px=self.typing_min_component_area_px,
             pixel_size_angstrom=self.typing_pixel_size_angstrom,
@@ -1774,6 +1831,7 @@ class _LiveTypingUpdater:
             incremental=True,
             cancel_event=self._cancel,
             weights_dir=self.weights_dir,
+            sample_stride_px=self.typing_sample_stride_px,
         )
         self._refresh_available_otfs()
         self.last_images = images
@@ -1848,6 +1906,8 @@ def _finalize_local_run_outputs(
     resource_env: dict[str, str] | None,
     timeout: float | None,
     typing_workers: int | None = None,
+    typing_device: str | None = None,
+    typing_sample_stride_px: int | None = None,
 ) -> dict[str, Any]:
     manifest = predict_helpers.load_transfer_manifest(local_manifest_file)
     run_id = str(UUID(str(manifest.get("run_id"))))
@@ -1884,6 +1944,12 @@ def _finalize_local_run_outputs(
             incremental=True,
             weights_dir=(Path(segmentation_checkpoint).expanduser().resolve().parent
                          if segmentation_checkpoint else None),
+            # Match whatever --typing-device string and sample_stride_px live typing used
+            # for the same run so already-typed images are recognized as cached instead of
+            # retyped from scratch (the publication classifier's cache signature includes
+            # both values).
+            typing_device=typing_device,
+            sample_stride_px=typing_sample_stride_px,
         )
         typing_summary_path = local_typing_dir / "summary.json"
         if not typing_summary_path.exists():
@@ -2106,6 +2172,7 @@ def _write_and_push_failure_result(
 
 
 def _run_predict(args: argparse.Namespace, config: CryoSPARCIntegrationConfig) -> int:
+    _default_num_cpus_if_unset(args)
     project_uid = validate_project_uid(args.project)
     workspace_uid = validate_workspace_uid(args.workspace)
     micrographs_ref = _normalize_output_ref(args.micrographs, default_output_name="micrographs")
@@ -2255,13 +2322,60 @@ def _run_predict(args: argparse.Namespace, config: CryoSPARCIntegrationConfig) -
             live_enabled = False
         inference_env = resource_env.copy()
         inference_cpus = getattr(args, "num_cpus", None)
+        inference_num_gpus = getattr(args, "num_gpus", None)
+        typing_gpu_devices: list[str] = []
+        # What --typing-device the FINAL typing/finalization pass should use, independent
+        # of whether live typing itself is enabled: its cache signatures must match
+        # whatever live typing (if any) already used for this run, or every already-typed
+        # image looks stale to it and gets wastefully redone from scratch.
+        typing_device_for_final: str | None = (
+            "cuda:0" if inference_num_gpus is not None and int(inference_num_gpus) >= 1 else None
+        )
+        if live_enabled and inference_num_gpus is not None:
+            total_gpus = int(inference_num_gpus)
+            if total_gpus == 1:
+                # No spare GPU to dedicate to typing without contending with segmentation
+                # for the one available device, and CPU-only typing has been far too slow
+                # for the publication classifier to make meaningful live progress. Run all
+                # typing once, uncontended, on that GPU right after inference finishes.
+                live_enabled = False
+                print(
+                    "Only 1 GPU requested: running typing after inference finishes "
+                    "(uncontended) instead of live in the background.",
+                    flush=True,
+                )
+            else:
+                seg_indices, typing_indices = _split_gpus_for_segmentation_and_typing(total_gpus)
+                visible = _first_visible_cuda_devices(total_gpus)
+                tokens = visible.split(",") if visible else [str(index) for index in range(total_gpus)]
+                inference_env["CUDA_VISIBLE_DEVICES"] = ",".join(tokens[index] for index in seg_indices)
+                typing_gpu_devices = [tokens[index] for index in typing_indices]
+                inference_num_gpus = len(seg_indices)
+                print(
+                    f"Splitting {total_gpus} GPU(s) to avoid contention: segmentation uses "
+                    f"device(s) {inference_env['CUDA_VISIBLE_DEVICES']}, background typing "
+                    f"uses device(s) {','.join(typing_gpu_devices)}.",
+                    flush=True,
+                )
         if live_enabled:
             live_workers = _typing_workers(resource_env, getattr(args, "typing_workers", None), live=True)
             if inference_cpus is not None or os.environ.get("CRYOFILTER_NUM_CPUS") or os.environ.get("SLURM_CPUS_PER_TASK"):
                 inference_cpus = max(1, cpu_budget - live_workers)
                 for key in ("CRYOFILTER_NUM_CPUS", "OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
                     inference_env[key] = str(inference_cpus)
-            print(f"CPU allocation: inference {inference_cpus or 'auto'}, background typing {live_workers} worker(s).", flush=True)
+            # live_workers is the total CPU budget already reserved for typing; when it
+            # runs as several concurrent per-GPU shards, split that budget across them
+            # instead of each shard independently claiming the whole thing.
+            typing_shard_workers = (
+                max(1, live_workers // len(typing_gpu_devices)) if typing_gpu_devices else live_workers
+            )
+            print(
+                f"CPU allocation: inference {inference_cpus or 'auto'}, background typing "
+                f"{live_workers} worker(s)"
+                + (f" split across GPU(s) {','.join(typing_gpu_devices)}" if typing_gpu_devices else " on CPU")
+                + ".",
+                flush=True,
+            )
             live_typing_callback = _LiveTypingUpdater(
                 local_manifest_file=local_manifest_file,
                 local_transfer_dir=local_transfer_dir,
@@ -2277,9 +2391,11 @@ def _run_predict(args: argparse.Namespace, config: CryoSPARCIntegrationConfig) -
                 typing_pixel_size_angstrom=getattr(args, "typing_pixel_size_angstrom", None),
                 typing_timeout=getattr(args, "typing_timeout", None),
                 resource_env=resource_env,
-                typing_workers=live_workers,
+                typing_workers=typing_shard_workers,
+                typing_gpu_devices=typing_gpu_devices,
                 weights_dir=(Path(args.checkpoint).expanduser().resolve().parent
                              if args.checkpoint else None),
+                typing_sample_stride_px=getattr(args, "typing_sample_stride_px", None),
             )
         print("Phase: GPU inference.", flush=True)
         inference_ok = False
@@ -2296,7 +2412,7 @@ def _run_predict(args: argparse.Namespace, config: CryoSPARCIntegrationConfig) -
                 timeout=args.inference_timeout,
                 env_overrides=inference_env,
                 num_cpus=inference_cpus,
-                num_gpus=getattr(args, "num_gpus", None),
+                num_gpus=inference_num_gpus,
                 render_particle_overlays=_render_initial_particle_overlays(
                     run_typing=run_typing,
                     typing_summary_path=typing_summary_path,
@@ -2338,6 +2454,8 @@ def _run_predict(args: argparse.Namespace, config: CryoSPARCIntegrationConfig) -
             typing_pixel_size_angstrom=getattr(args, "typing_pixel_size_angstrom", None),
             typing_timeout=getattr(args, "typing_timeout", None),
             typing_workers=getattr(args, "typing_workers", None),
+            typing_device=typing_device_for_final,
+            typing_sample_stride_px=getattr(args, "typing_sample_stride_px", None),
             max_overlay_images=int(args.max_overlay_images),
             max_bar_items=int(args.max_bar_items),
             resource_env=resource_env,
@@ -2366,6 +2484,7 @@ def _run_predict(args: argparse.Namespace, config: CryoSPARCIntegrationConfig) -
 
 
 def _run_finalize_run(args: argparse.Namespace, config: CryoSPARCIntegrationConfig) -> int:
+    _default_num_cpus_if_unset(args)
     local_run_dir = Path(args.local_run_dir).expanduser().resolve()
     payload: dict[str, Any] = {
         "ok": False,
@@ -2472,6 +2591,7 @@ def _run_finalize_run(args: argparse.Namespace, config: CryoSPARCIntegrationConf
             typing_pixel_size_angstrom=getattr(args, "typing_pixel_size_angstrom", None),
             typing_timeout=getattr(args, "typing_timeout", None),
             typing_workers=getattr(args, "typing_workers", None),
+            typing_sample_stride_px=getattr(args, "typing_sample_stride_px", None),
             max_overlay_images=int(args.max_overlay_images),
             max_bar_items=int(args.max_bar_items),
             resource_env=resource_env,

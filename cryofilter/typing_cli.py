@@ -79,7 +79,20 @@ def _add_type_arguments(ap: argparse.ArgumentParser) -> None:
     ap.add_argument("--typing-checkpoint", type=Path,
                     help="Publication classifier.pt file or its folder; auto-detected from pretrained_models/ by default.")
     ap.add_argument("--typing-device", default="auto", help="Publication typing device: auto, cpu, cuda, or cuda:N.")
-    ap.add_argument("--typing-batch-size", type=int, default=16, help="Publication feature-extraction batch size.")
+    ap.add_argument(
+        "--typing-batch-size", type=int, default=32,
+        help="Publication feature-extraction batch size. Automatically halved on GPU "
+             "out-of-memory, so raising this is safe to try - it only affects speed, not "
+             "results (the model uses GroupNorm, not batch-dependent normalization).",
+    )
+    ap.add_argument(
+        "--typing-sample-stride-px", type=int, default=None,
+        help="Publication classifier grid-sampling stride in pixels (default: the shipped "
+             "model's default, 64 - the 'fast typing' setting, ~9.5x faster than the "
+             "original 16 for a small, consistent accuracy cost; see "
+             "docs_for_expert_users/README.md for the full speed/accuracy sweep). Lower "
+             "values (e.g. 16 or 32) trade speed back for the original fidelity.",
+    )
     ap.add_argument("--manifest", type=Path, required=True, help="CSV with dataset_id, stem, micrograph path, and mask path.")
     ap.add_argument(
         "--output-dir",
@@ -123,6 +136,18 @@ def _add_type_arguments(ap: argparse.ArgumentParser) -> None:
     ap.add_argument("--workers", type=int, default=1, help="CPU threads for publication typing, or per-image workers for heuristic typing (default: 1).")
     ap.add_argument("--incremental", action="store_true", help="Reuse per-image typing when inputs and settings are unchanged.")
     ap.add_argument("--summary-interval", type=float, default=20.0, help="Minimum seconds between live summary/mask updates; always publish the final result.")
+    ap.add_argument(
+        "--shard-index", type=int, default=0,
+        help="This process's shard index when splitting work across multiple concurrent GPU workers "
+             "(publication classifier only). Each shard only classifies its own images and writes their "
+             "per-image cache/typed-mask files; only shard-count=1 (the default) publishes the shared "
+             "summary/CSV outputs.",
+    )
+    ap.add_argument(
+        "--shard-count", type=int, default=1,
+        help="Total number of concurrent shards splitting the pending image list (publication classifier "
+             "only). Leave at 1 for a normal single-process run that also publishes results.",
+    )
 
 
 def build_parser(*, prog: str = "predict_contamination_types.py") -> argparse.ArgumentParser:
@@ -770,6 +795,8 @@ def run(args: argparse.Namespace) -> int:
     if getattr(args, "classifier", "publication") == "publication":
         from .publication_runner import run as run_publication
         return run_publication(args)
+    if int(getattr(args, "shard_count", 1) or 1) > 1:
+        raise NotImplementedError("--shard-count > 1 is only supported with --classifier publication")
     workers = int(getattr(args, "workers", 1))
     interval = float(getattr(args, "summary_interval", 20.0))
     if workers < 1 or not np.isfinite(interval) or interval < 0:

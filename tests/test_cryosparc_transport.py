@@ -1058,6 +1058,19 @@ def test_run_local_typing_builds_command(monkeypatch: pytest.MonkeyPatch, tmp_pa
     assert calls[0][0] == command
     assert calls[0][1]["timeout"] == 12.0
     assert calls[0][1]["env"]["OMP_NUM_THREADS"] == "1"
+    assert "--typing-device" not in command
+
+
+def test_run_local_typing_forwards_typing_device(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(predict_helpers, "_run_polled_command", lambda argv, **kwargs: _Completed(returncode=0))
+
+    command = predict_helpers.run_local_typing(
+        manifest_path=tmp_path / "typing_manifest.csv",
+        output_dir=tmp_path / "typing",
+        typing_device="cpu",
+    )
+
+    assert command[command.index("--typing-device") + 1] == "cpu"
 
 
 def test_live_typing_updater_runs_partial_typing_and_refreshes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1153,11 +1166,84 @@ def test_live_typing_updater_runs_partial_typing_and_refreshes(tmp_path: Path, m
     assert captured["typing"]["expected_images"] == 2
     assert captured["typing"]["env_overrides"] == {"OMP_NUM_THREADS": "8"}
     assert captured["typing"]["weights_dir"] == tmp_path / "shared-weights"
+    # With no dedicated GPU assigned (typing_gpu_devices left at its default empty
+    # tuple), live typing must fall back to CPU rather than default onto the same
+    # GPU inference is already using (PublicationClassifier's "auto" -> "cuda"
+    # resolution would otherwise collide with segmentation). See
+    # test_live_typing_updater_shards_across_dedicated_gpus for the GPU-split case.
+    assert captured["typing"]["typing_device"] == "cpu"
     assert callable(captured["typing"]["poll_callback"])
     assert captured["refresh"]["typing_summary_path"] == typing_dir / "summary.json"
     with (local_run_dir / "contamination_typing_manifest.csv").open(encoding="utf-8", newline="") as handle:
         rows = list(csv.DictReader(handle))
     assert [row["stem"] for row in rows] == ["ready"]
+
+
+def test_live_typing_updater_shards_across_dedicated_gpus(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    local_run_dir = tmp_path / "run"
+    transfer = local_run_dir / "transfer"
+    inference = local_run_dir / "inference"
+    typing_dir = local_run_dir / "typing"
+    (transfer / "micrographs").mkdir(parents=True)
+    inference.mkdir(parents=True)
+    np.save(inference / "ready_mask.npy", np.zeros((4, 4), dtype=np.uint8))
+    manifest_path = local_run_dir / "transfer_manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "protocol_version": 1,
+                "run_id": "00000000-0000-0000-0000-000000000023",
+                "project_uid": "P1",
+                "workspace_uid": "W2",
+                "external_job_uid": "J9",
+                "micrographs": [
+                    {
+                        "uid": 7,
+                        "transfer_filename": "micrographs/ready.mrc",
+                        "shape_yx": [4, 4],
+                        "pixel_size_angstrom": 1.5,
+                    },
+                ],
+                "particles": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    captured: dict[str, object] = {}
+
+    def fake_run_local_typing_multi_gpu(**kwargs):
+        captured["typing"] = kwargs
+        Path(kwargs["output_dir"]).mkdir(parents=True, exist_ok=True)
+        (Path(kwargs["output_dir"]) / "summary.json").write_text("{}", encoding="utf-8")
+        return [["typing"]]
+
+    monkeypatch.setattr(predict_helpers, "run_local_typing_multi_gpu", fake_run_local_typing_multi_gpu)
+    monkeypatch.setattr(remote_cli, "_refresh_typed_particle_overlays", lambda **kwargs: {"enabled": True, "refreshed": 1})
+
+    updater = remote_cli._LiveTypingUpdater(
+        local_manifest_file=manifest_path,
+        local_transfer_dir=transfer,
+        local_inference_dir=inference,
+        inference_summary_file=inference / "inference_summary.json",
+        local_run_dir=local_run_dir,
+        local_typing_dir=typing_dir,
+        project_uid="P1",
+        workspace_uid="W2",
+        particle_exclusion_distance_angstrom=100.0,
+        typing_normalization_method=None,
+        typing_min_component_area_px=None,
+        typing_pixel_size_angstrom=None,
+        typing_timeout=None,
+        resource_env={"OMP_NUM_THREADS": "8"},
+        weights_dir=tmp_path / "shared-weights",
+        # As if _run_predict split a 4-GPU request into 2 for segmentation, 2 for typing.
+        typing_gpu_devices=["2", "3"],
+    )
+    updater()
+    updater.close()
+
+    assert captured["typing"]["typing_gpu_devices"] == ["2", "3"]
+    assert "typing_device" not in captured["typing"]  # run_local_typing_multi_gpu decides this itself
 
 
 def test_refresh_typed_particle_overlays_writes_four_panel_png(tmp_path: Path) -> None:
@@ -1680,15 +1766,18 @@ def test_predict_orchestrates_prepare_infer_push_and_finalize(
 
     assert remote_cli._run_predict(args, config) == 0
 
-    live_workers = captured_inference["poll_callback"].typing_workers if live_mode == "background" else 0
-    cpu_budget = remote_cli._local_cpu_budget({"CRYOFILTER_NUM_CPUS": "8"}) if live_mode == "background" else 8
-    assert captured_inference["num_cpus"] == cpu_budget - live_workers
+    # With only 1 GPU there is no spare device to dedicate to typing without contending
+    # with segmentation, and CPU-only typing was too slow to be worth running live - so
+    # "background" now behaves like "final-only" here: no live callback, inference keeps
+    # the full CPU budget, and the (only) typing pass runs at finalization on that GPU.
+    assert captured_inference["num_cpus"] == 8
     assert captured_inference["num_gpus"] == 1
     assert captured_inference["render_particle_overlays"] is True
-    assert callable(captured_inference["poll_callback"]) == (live_mode == "background")
-    assert captured_inference["env_overrides"]["OMP_NUM_THREADS"] == str(cpu_budget - live_workers)
+    assert captured_inference["poll_callback"] is None
+    assert captured_inference["env_overrides"]["OMP_NUM_THREADS"] == "8"
     assert captured_inference["env_overrides"]["CUDA_VISIBLE_DEVICES"] == "0"
     assert captured_typing["env_overrides"]["OMP_NUM_THREADS"] == "8"
+    assert captured_typing["typing_device"] == "cuda:0"
     assert captured_typed_overlay_refresh["create_if_missing"] is True
 
     prepare_call = next(call for call in calls if call[0] == "run" and "prepare" in call[1])

@@ -13,6 +13,7 @@ from typing import Optional, Sequence
 import numpy as np
 
 from cryofilter.app.server import add_subparser as add_app_subparser
+from cryofilter.cryosparc.remote.cli import _local_cpu_budget
 from cryofilter.cryosparc.remote.cli import add_subparser as add_cryosparc_subparser
 from cryofilter.typing_cli import add_subparser as add_type_subparser
 from cryofilter.typing_cli import run as run_type
@@ -28,6 +29,7 @@ from utils.small_pixel_policy import (
     resolve_small_pixel_inference_policy,
 )
 
+CPU_AUTO_RESERVE_CORES = 2
 DEFAULT_MASK_THRESHOLD = 0.60
 DEFAULT_PARTICLE_EXCLUSION_DISTANCE_ANGSTROM = 100.0
 DEFAULT_PUBLIC_CHECKPOINT_RELATIVE = Path("pretrained_models") / "cryoFILTER_FULL.pt"
@@ -219,6 +221,12 @@ def _cpu_threads_per_gpu_worker(total_cpus: int | None, worker_count: int) -> in
     return max(1, int(total_cpus) // int(worker_count))
 
 
+def _default_num_cpus() -> int:
+    """Auto-detected CPU budget when --num-cpus is left blank: everything minus a
+    small reserve, so the app doesn't claim every core on a shared machine."""
+    return max(1, _local_cpu_budget(None) - CPU_AUTO_RESERVE_CORES)
+
+
 def _apply_infer_resource_args(args: argparse.Namespace) -> dict[str, int | None]:
     """Apply friendly CPU/GPU count aliases before resolving public GPU shards."""
 
@@ -227,9 +235,10 @@ def _apply_infer_resource_args(args: argparse.Namespace) -> dict[str, int | None
         name="--num-cpus",
         minimum=1,
     )
-    if num_cpus is not None:
-        args.num_cpus = num_cpus
-        _set_cpu_thread_env(num_cpus)
+    if num_cpus is None:
+        num_cpus = _default_num_cpus()
+    args.num_cpus = num_cpus
+    _set_cpu_thread_env(num_cpus)
 
     num_gpus = _parse_optional_resource_int(
         getattr(args, "num_gpus", None) or os.environ.get("CRYOFILTER_NUM_GPUS"),
@@ -2203,7 +2212,10 @@ def _build_parser() -> argparse.ArgumentParser:
         "--num-cpus",
         type=int,
         default=None,
-        help="Optional CPU thread count for preprocessing, PNG generation, and math libraries.",
+        help=(
+            "Optional CPU thread count for preprocessing, PNG generation, and math libraries. "
+            "Leave unset to auto-detect all available CPUs minus 2."
+        ),
     )
     infer.add_argument(
         "--num-gpus",

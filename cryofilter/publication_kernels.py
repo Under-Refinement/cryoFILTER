@@ -7,8 +7,11 @@ these kernels. See docs/publication_classifier.md for provenance and metrics.
 """
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 import math
+import os
+import time
 from typing import Any, Sequence
 
 import numpy as np
@@ -17,6 +20,38 @@ from scipy import ndimage as ndi
 
 from utils.contamination_subtypes import TYPE_ID_SEQUENCE, TYPE_ID_TO_KEY
 from utils.image_utils import compute_frequency_band_psd_channels_batch
+
+# Set CRYOFILTER_TYPING_PROFILE=1 to print a per-image phase-timing breakdown from
+# predict_prepared (grid sampling, embeddings, handcrafted features, rescue pass,
+# probability splatting, ...). Off by default - pure diagnostic, changes no computation.
+_PROFILE_TYPING = bool(os.environ.get("CRYOFILTER_TYPING_PROFILE"))
+
+
+class _PhaseTimer:
+    """Accumulates named phase durations for one predict_prepared() call."""
+
+    def __init__(self, enabled: bool) -> None:
+        self.enabled = enabled
+        self.totals: dict[str, float] = {}
+        self._t0 = time.monotonic() if enabled else 0.0
+
+    def mark(self, name: str) -> None:
+        if not self.enabled:
+            return
+        now = time.monotonic()
+        self.totals[name] = self.totals.get(name, 0.0) + (now - self._t0)
+        self._t0 = now
+
+    def report(self, *, n_centers: int, n_rescue_centers: int) -> None:
+        if not self.enabled:
+            return
+        parts = ", ".join(f"{name}={seconds:.2f}s" for name, seconds in self.totals.items())
+        total = sum(self.totals.values())
+        print(
+            f"[typing-profile] centers={n_centers} rescue_centers={n_rescue_centers} "
+            f"total={total:.2f}s :: {parts}",
+            flush=True,
+        )
 
 def _extract_centered_patch(arr: np.ndarray, cy: int, cx: int, patch_size: int, pad_mode: str) -> np.ndarray:
     half = patch_size // 2
@@ -954,10 +989,11 @@ def _compute_handcrafted_patch_features_batch(
     append_background_reference_features: bool,
     append_gradient_polarity_features: bool,
     append_bragg_fourier_features: bool,
+    workers: int = 1,
 ) -> np.ndarray:
     patches = np.asarray(patches, dtype=np.float32)
-    rows: list[list[float]] = []
-    for idx in range(patches.shape[0]):
+
+    def _one(idx: int) -> list[float]:
         feats = _compute_single_handcrafted_feature_dict(
             patches[idx],
             pixel_size_angstrom=float(pixel_size_angstrom),
@@ -970,8 +1006,79 @@ def _compute_handcrafted_patch_features_batch(
             append_gradient_polarity_features=bool(append_gradient_polarity_features),
             append_bragg_fourier_features=bool(append_bragg_fourier_features),
         )
-        rows.append([float(v) for v in feats.values()])
+        return [float(v) for v in feats.values()]
+
+    # Each patch's handcrafted features (FFT/gradient/structure-tensor based) are fully
+    # independent of every other patch - this is embarrassingly parallel. numpy/scipy
+    # release the GIL during their C-level FFT/array compute, so a thread pool gives
+    # real wall-clock parallelism here without inter-process serialization overhead.
+    # executor.map preserves input order, so results still line up 1:1 with `patches`.
+    if int(workers) <= 1 or patches.shape[0] <= 1:
+        rows = [_one(idx) for idx in range(patches.shape[0])]
+    else:
+        with ThreadPoolExecutor(max_workers=int(workers)) as pool:
+            rows = list(pool.map(_one, range(patches.shape[0])))
     return np.asarray(rows, dtype=np.float32)
+
+def _run_probe_on_centers_chunk(
+    image_norm: np.ndarray,
+    chunk_centers: Sequence[tuple[int, int]],
+    *,
+    scale: "ScaleSpec",
+    probe: Any,
+    device: torch.device,
+    encoder_input_mode: str,
+    pixel_size_angstrom: float,
+    frequency_bands: tuple[tuple[float, float], ...],
+) -> np.ndarray:
+    """Run the probe forward pass for one (scale, chunk-of-centers) batch.
+
+    On GPU OOM, bisects the chunk and retries the two halves instead of
+    propagating the failure - since the embedding is computed per-sample
+    (GroupNorm, no cross-batch statistics), the result is identical to what
+    a single successful call at this chunk size would have produced. This
+    keeps an OOM local to the batch that hit it, instead of losing every
+    already-computed center in the image and permanently shrinking the
+    batch size for the rest of the run (see PublicationClassifier.predict_prepared).
+    """
+    patches = [
+        _extract_centered_patch(image_norm, cy, cx, int(scale.patch_size), pad_mode="reflect").astype(
+            np.float32, copy=False
+        )
+        for cy, cx in chunk_centers
+    ]
+    batch_np = np.stack(patches, axis=0).astype(np.float32, copy=False)
+    inputs = _build_input_batch(
+        batch_np,
+        pixel_size_angstrom=float(pixel_size_angstrom),
+        frequency_bands=frequency_bands,
+        input_mode=str(encoder_input_mode),
+        input_channels=probe.input_channels,
+        use_power_spectrum=probe.use_power_spectrum,
+        include_real_space_input=probe.include_real_space_input,
+    )
+    try:
+        tensor = torch.from_numpy(inputs).to(device, non_blocking=True)
+        with torch.inference_mode():
+            features, _contam_logits = probe(tensor)
+        return _embedding_from_feature_map(features, center_size=int(scale.embedding_center_size))
+    except torch.cuda.OutOfMemoryError:
+        if len(chunk_centers) <= 1:
+            raise
+        torch.cuda.empty_cache()
+        mid = len(chunk_centers) // 2
+        first = _run_probe_on_centers_chunk(
+            image_norm, chunk_centers[:mid], scale=scale, probe=probe, device=device,
+            encoder_input_mode=encoder_input_mode, pixel_size_angstrom=pixel_size_angstrom,
+            frequency_bands=frequency_bands,
+        )
+        second = _run_probe_on_centers_chunk(
+            image_norm, chunk_centers[mid:], scale=scale, probe=probe, device=device,
+            encoder_input_mode=encoder_input_mode, pixel_size_angstrom=pixel_size_angstrom,
+            frequency_bands=frequency_bands,
+        )
+        return np.concatenate([first, second], axis=0)
+
 
 def _compute_multiscale_embeddings_for_centers(
     image_norm: np.ndarray,
@@ -988,28 +1095,14 @@ def _compute_multiscale_embeddings_for_centers(
     out: list[np.ndarray] = []
     for start in range(0, len(centers), batch_size):
         batch_centers = centers[start : start + batch_size]
-        emb_parts: list[np.ndarray] = []
-        for scale in scales:
-            patches = [
-                _extract_centered_patch(image_norm, cy, cx, int(scale.patch_size), pad_mode="reflect").astype(
-                    np.float32, copy=False
-                )
-                for cy, cx in batch_centers
-            ]
-            batch_np = np.stack(patches, axis=0).astype(np.float32, copy=False)
-            inputs = _build_input_batch(
-                batch_np,
-                pixel_size_angstrom=float(pixel_size_angstrom),
+        emb_parts = [
+            _run_probe_on_centers_chunk(
+                image_norm, batch_centers, scale=scale, probe=probe, device=device,
+                encoder_input_mode=encoder_input_mode, pixel_size_angstrom=pixel_size_angstrom,
                 frequency_bands=frequency_bands,
-                input_mode=str(encoder_input_mode),
-                input_channels=probe.input_channels,
-                use_power_spectrum=probe.use_power_spectrum,
-                include_real_space_input=probe.include_real_space_input,
             )
-            tensor = torch.from_numpy(inputs).to(device, non_blocking=True)
-            with torch.inference_mode():
-                features, _contam_logits = probe(tensor)
-            emb_parts.append(_embedding_from_feature_map(features, center_size=int(scale.embedding_center_size)))
+            for scale in scales
+        ]
         out.append(np.concatenate(emb_parts, axis=1).astype(np.float32, copy=False))
     return np.concatenate(out, axis=0).astype(np.float32, copy=False)
 
@@ -1035,6 +1128,9 @@ def _compute_feature_vectors_for_centers(
     append_gradient_polarity_features: bool,
     append_bragg_fourier_features: bool,
     contamination_mask: np.ndarray | None = None,
+    handcrafted_workers: int = 1,
+    _timer: "_PhaseTimer | None" = None,
+    _timer_prefix: str = "",
 ) -> np.ndarray:
     emb = _compute_multiscale_embeddings_for_centers(
         image_norm,
@@ -1047,6 +1143,8 @@ def _compute_feature_vectors_for_centers(
         frequency_bands=frequency_bands,
         batch_size=batch_size,
     )
+    if _timer is not None:
+        _timer.mark(f"{_timer_prefix}cnn_embeddings")
     if not append_handcrafted_features:
         out = emb
     else:
@@ -1071,6 +1169,7 @@ def _compute_feature_vectors_for_centers(
                     append_background_reference_features=bool(append_background_reference_features),
                     append_gradient_polarity_features=bool(append_gradient_polarity_features),
                     append_bragg_fourier_features=bool(append_bragg_fourier_features),
+                    workers=int(handcrafted_workers),
                 )
             )
         handcrafted = np.concatenate(handcrafted_parts, axis=0).astype(np.float32, copy=False)
@@ -1196,7 +1295,9 @@ def predict_prepared(
     append_edgecorner_geometry_features: bool,
     append_gradient_polarity_features: bool,
     append_bragg_fourier_features: bool,
+    handcrafted_workers: int = 1,
 ) -> dict[str, Any]:
+    _timer = _PhaseTimer(_PROFILE_TYPING)
     classes = _classifier_classes(patch_model)
     class_to_global = {int(type_id): idx for idx, type_id in enumerate(TYPE_ID_SEQUENCE)}
 
@@ -1274,6 +1375,7 @@ def predict_prepared(
     if not centers:
         return {"pred_map": np.zeros(pred_mask.shape, dtype=np.uint8), "top1_prob": np.zeros(pred_mask.shape, dtype=np.float16), "top1_margin": np.zeros(pred_mask.shape, dtype=np.float16), "centers": 0}
     center_boundary_dist_np = np.asarray(center_boundary_distances, dtype=np.float32)
+    _timer.mark("grid_sampling")
 
     feature_vectors = _compute_feature_vectors_for_centers(
         image_norm,
@@ -1296,7 +1398,10 @@ def predict_prepared(
         append_gradient_polarity_features=append_gradient_polarity_features,
         append_bragg_fourier_features=append_bragg_fourier_features,
         contamination_mask=pred_mask,
+        handcrafted_workers=handcrafted_workers,
+        _timer=_timer,
     )
+    _timer.mark("handcrafted_features")
     probs_local = patch_model.predict_proba(feature_vectors)
     probs_global = np.zeros((probs_local.shape[0], len(TYPE_ID_SEQUENCE)), dtype=np.float32)
     for local_idx, class_id in enumerate(classes.tolist()):
@@ -1348,6 +1453,8 @@ def predict_prepared(
         corner_max_crystalline_margin=float(corner_rescue_max_crystalline_margin),
         corner_boost=float(corner_rescue_boost),
     )
+    _timer.mark("classify_and_border_rescue")
+    n_rescue_centers = 0
     if (
         rescue_model is not None
         and rescue_scales
@@ -1364,6 +1471,7 @@ def predict_prepared(
         if rescue_require_aggregate_top2:
             rescue_mask &= _top2_contains(probs_global, int(agg_type_idx))
         rescue_indices = np.flatnonzero(rescue_mask)
+        n_rescue_centers = int(rescue_indices.size)
         if rescue_indices.size > 0:
             rescue_centers = [centers[int(idx)] for idx in rescue_indices.tolist()]
             rescue_features = _compute_feature_vectors_for_centers(
@@ -1387,7 +1495,11 @@ def predict_prepared(
                 append_gradient_polarity_features=append_gradient_polarity_features,
                 append_bragg_fourier_features=append_bragg_fourier_features,
                 contamination_mask=pred_mask,
+                handcrafted_workers=handcrafted_workers,
+                _timer=_timer,
+                _timer_prefix="rescue_",
             )
+            _timer.mark("rescue_handcrafted_features")
             rescue_local = rescue_model.predict_proba(rescue_features)
             rescue_classes = _classifier_classes(rescue_model)
             rescue_global = np.zeros((rescue_local.shape[0], len(TYPE_ID_SEQUENCE)), dtype=np.float32)
@@ -1417,6 +1529,7 @@ def predict_prepared(
                         + alpha * rescue_global[apply_mask]
                     ).astype(np.float32, copy=False)
                 probs_global[idx_apply] = _row_normalize_probs(blended)
+    _timer.mark("rescue_classify_and_blend")
     probs_global = _apply_class_probability_weights(probs_global, class_weight_vec)
     probs_global = _apply_prob_power(probs_global, power=float(soft_eval_prob_power))
 
@@ -1514,6 +1627,7 @@ def predict_prepared(
         pred_idx = np.argmax(prob_map, axis=0).astype(np.int64)
         pred_types = np.asarray(TYPE_ID_SEQUENCE, dtype=np.uint8)[pred_idx]
         pred_map[valid_pred] = pred_types[valid_pred]
+    _timer.mark("splatting")
 
     pred_map, image_component_counts = _apply_component_geometry_postprocess(
         pred_map,
@@ -1531,7 +1645,7 @@ def predict_prepared(
     )
     for name, count in image_component_counts.items():
         component_postprocess_apply_counts[name] = component_postprocess_apply_counts.get(name, 0) + int(count)
-
+    _timer.mark("postprocess")
 
     top1_prob = np.zeros((h, w), dtype=np.float16)
     top1_margin = np.zeros((h, w), dtype=np.float16)
@@ -1541,4 +1655,5 @@ def predict_prepared(
         second = top2[-2]
         top1_prob[valid_pred] = top[valid_pred].astype(np.float16)
         top1_margin[valid_pred] = (top - second)[valid_pred].astype(np.float16)
+    _timer.report(n_centers=len(centers), n_rescue_centers=n_rescue_centers)
     return {"pred_map": pred_map, "top1_prob": top1_prob, "top1_margin": top1_margin, "centers": len(centers)}

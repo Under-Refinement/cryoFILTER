@@ -126,7 +126,7 @@ def resize_labels(array, shape):
 
 
 class PublicationClassifier:
-    def __init__(self, *, model_dir=None, checkpoint=None, device="auto", batch_size=16):
+    def __init__(self, *, model_dir=None, checkpoint=None, device="auto", batch_size=16, cpu_workers=1):
         self.model_dir = Path(model_dir) if model_dir else MODEL_DIR
         self.metadata = json.loads((self.model_dir / "manifest.json").read_text())
         for name in ("models.json", "settings.json", "model_config.json"):
@@ -165,15 +165,27 @@ class PublicationClassifier:
             pair_refine_model=None, device=self.device, batch_size=int(batch_size),
             scales=[ScaleSpec(**item) for item in self.settings["scales"]],
             rescue_scales=[ScaleSpec(**item) for item in self.settings["rescue_scales"]],
+            # Per-patch handcrafted features (FFT/gradient/structure-tensor) are
+            # independent of each other, so this parallelizes across CPU threads
+            # instead of the single-threaded default - same math, same results,
+            # just scheduled concurrently. See publication_kernels._compute_handcrafted_patch_features_batch.
+            handcrafted_workers=max(1, int(cpu_workers)),
         )
         self.kwargs = {key: value for key, value in self.kwargs.items()
                        if key in inspect.signature(predict_prepared).parameters}
+        # The configured batch size, restored before every image. OOM handling for
+        # individual probe forward passes now bisects locally inside predict_prepared
+        # (see _run_probe_on_centers_chunk in publication_kernels.py) instead of
+        # relying on this outer retry, so this loop is a last-resort safety net only -
+        # it must not let one transient OOM permanently shrink every later image.
+        self._configured_batch_size = int(self.kwargs["batch_size"])
 
     def predict_prepared(self, image_norm, mask):
         image = np.asarray(image_norm, dtype=np.float32)
         mask = np.asarray(mask, dtype=bool)
         if image.ndim != 2 or image.shape != mask.shape or not np.all(np.isfinite(image)):
             raise ValueError("Typing requires finite 2-D image data aligned with the mask")
+        self.kwargs["batch_size"] = self._configured_batch_size
         while True:
             try:
                 return predict_prepared(image, mask, **self.kwargs)
@@ -182,7 +194,7 @@ class PublicationClassifier:
                     raise
                 self.kwargs["batch_size"] = max(1, self.kwargs["batch_size"] // 2)
                 warnings.warn(f"Reducing publication typing batch size to {self.kwargs['batch_size']} "
-                              "after GPU memory exhaustion", RuntimeWarning)
+                              "for this image after GPU memory exhaustion", RuntimeWarning)
             # The exception frame must be released before clearing GPU cache.
             torch.cuda.empty_cache()
 

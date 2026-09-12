@@ -895,6 +895,7 @@ def _build_cryosparc_predict_spec(payload: dict[str, Any], *, work_dir: Path) ->
         raise ValueError("Live typing must be background or final-only")
     _add_option(argv, "--live-typing", live_typing)
     _add_option(argv, "--typing-workers", payload.get("typing_workers"))
+    _add_option(argv, "--typing-sample-stride-px", payload.get("typing_sample_stride_px"))
     if run_typing and not _optional_str(payload.get("typing_summary")):
         argv.append("--run-typing")
     elif not run_typing:
@@ -941,6 +942,7 @@ def _build_cryosparc_predict_spec(payload: dict[str, Any], *, work_dir: Path) ->
             "run_typing": run_typing,
             "live_typing": live_typing,
             "typing_workers": payload.get("typing_workers"),
+            "typing_sample_stride_px": payload.get("typing_sample_stride_px"),
             "num_cpus": payload.get("num_cpus"),
             "num_gpus": payload.get("num_gpus"),
             "export_masks": export_masks,

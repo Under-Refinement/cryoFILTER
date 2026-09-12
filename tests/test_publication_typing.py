@@ -11,6 +11,7 @@ from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 
 from cryofilter import typing_cli, publication_runner
+from cryofilter.publication_kernels import _compute_handcrafted_patch_features_batch
 from cryofilter.publication_typing import BinaryModel, resize_labels
 
 
@@ -29,6 +30,13 @@ def test_publication_is_cli_default():
     args = typing_cli.parse_args(["--manifest", "inputs.csv", "--output-dir", "outputs"])
     assert args.classifier == "publication"
     assert args.typing_checkpoint is None
+    # Raised from 16 now that live typing gets a dedicated, uncontended GPU (see
+    # cryosparc/remote/cli.py's segmentation/typing GPU split) - pure speed knob,
+    # GroupNorm means results don't depend on batch size.
+    assert args.typing_batch_size == 32
+    # None means "use the classifier's shipped default" (settings.json's
+    # sample_stride_px, currently 64) rather than hardcoding it twice.
+    assert args.typing_sample_stride_px is None
 
 
 def test_mixed_component_summary_counts_pixels_not_majority():
@@ -98,6 +106,82 @@ def test_publication_incremental_pipeline_and_monitor_schema(tmp_path, monkeypat
     assert not np.load(output / "typed_masks/example__mic1_typed_mask.npy").any()
 
 
+@pytest.mark.parametrize("workers", [1, 2, 5, 32])
+def test_handcrafted_features_are_identical_regardless_of_worker_count(workers):
+    # Each patch's handcrafted features are independent; parallelizing across threads
+    # must never change the result, only how fast it's computed. 5 patches with only 2
+    # workers, and 32 workers for 5 patches, both exercise imbalanced/oversized pools.
+    rng = np.random.default_rng(11)
+    patches = rng.normal(size=(5, 96, 96)).astype(np.float32)
+    kwargs = dict(
+        pixel_size_angstrom=2.0,
+        frequency_bands=((0.03, 0.05), (0.09, 0.11), (0.14, 0.16), (0.22, 0.24)),
+        center_size=64,
+        append_real_space_handcrafted_features=True,
+        append_psd_band_features=True,
+        append_anisotropic_fourier_features=True,
+        append_background_reference_features=True,
+        append_gradient_polarity_features=True,
+        append_bragg_fourier_features=True,
+    )
+    baseline = _compute_handcrafted_patch_features_batch(patches, workers=1, **kwargs)
+    parallel = _compute_handcrafted_patch_features_batch(patches, workers=workers, **kwargs)
+    np.testing.assert_array_equal(parallel, baseline)
+
+
+def test_publication_sharding_splits_work_and_only_aggregator_publishes(tmp_path, monkeypatch):
+    # Mirrors how run_local_typing_multi_gpu drives multiple dedicated-GPU shard
+    # subprocesses followed by one non-sharded aggregation pass.
+    calls = []
+
+    class FakeClassifier:
+        def __init__(self, **kwargs):
+            pass
+
+        def predict(self, image, mask, px):
+            calls.append(px)
+            typed = np.where(mask, 4, 0).astype(np.uint8)
+            return {"pred_map": typed, "top1_prob": mask.astype(np.float16),
+                    "top1_margin": mask.astype(np.float16)}
+
+    monkeypatch.setattr(publication_runner, "PublicationClassifier", FakeClassifier)
+    rows = []
+    for index in range(4):
+        mic = tmp_path / f"mic{index}.mrc"
+        with mrcfile.new(mic) as handle:
+            handle.set_data(np.ones((16, 16), dtype=np.float32))
+            handle.voxel_size = 2
+        mask_path = tmp_path / f"mask{index}.npy"
+        np.save(mask_path, np.ones((16, 16), dtype=np.uint8))
+        rows.append(dict(dataset_id="example", stem=f"mic{index}", micrograph_path=str(mic),
+                         binary_mask_path=str(mask_path), pixel_size_angstrom=2))
+    manifest = tmp_path / "manifest.csv"
+    pd.DataFrame(rows).to_csv(manifest, index=False)
+    output = tmp_path / "typing"
+
+    def run(*extra):
+        return typing_cli.main(["--manifest", str(manifest), "--output-dir", str(output),
+                                "--incremental", "--expected-images", "4", "--summary-interval", "0",
+                                *extra])
+
+    assert run("--shard-index", "0", "--shard-count", "2") == 0
+    assert not (output / "summary.json").exists(), "a sharded worker must never publish"
+    assert run("--shard-index", "1", "--shard-count", "2") == 0
+    assert not (output / "summary.json").exists(), "a sharded worker must never publish"
+    assert sorted(calls) == [2, 2, 2, 2]
+    assert len(list((output / "typed_masks").glob("*.npy"))) == 4
+
+    # The aggregator (shard-count=1, the default) finds every image already cached by a
+    # shard, so it never touches the classifier again - just republishes the combined
+    # summary/CSV outputs.
+    calls_before_aggregate = len(calls)
+    assert run() == 0
+    assert len(calls) == calls_before_aggregate
+    summary = json.loads((output / "summary.json").read_text())
+    assert summary["n_images"] == 4
+    assert summary["typing_status"] == "complete"
+
+
 def test_resampling_preserves_label_ids():
     labels = np.array([[0, 1, 2], [3, 4, 0]], dtype=np.uint8)
     resized = resize_labels(labels, (13, 17))
@@ -143,6 +227,7 @@ def test_gpu_memory_retry_reduces_batch_without_changing_recipe(monkeypatch):
     from cryofilter import publication_typing
     classifier = object.__new__(publication_typing.PublicationClassifier)
     classifier.kwargs = {"batch_size": 4}
+    classifier._configured_batch_size = 4
     calls = []
 
     def predict(image, mask, **kwargs):
