@@ -175,10 +175,10 @@ def test_live_summary_ui_layout_and_palette() -> None:
     script = (static_root / "app.js").read_text(encoding="utf-8")
 
     assert html.index('id="liveSummaryCharts"') < html.index('class="live-range-controls"')
-    assert '1: "#226F54"' in script
-    assert '2: "#003D5B"' in script
-    assert '3: "#DE541E"' in script
-    assert '4: "#96BBBB"' in script
+    assert '1: "#915794"' in script
+    assert '2: "#327ca3"' in script
+    assert '3: "#de4d25"' in script
+    assert '4: "#6f8270"' in script
     assert "showLegend: false" in script
     assert "px typed" not in script
 
@@ -978,10 +978,10 @@ def test_app_state_live_summary_aggregates_typing_range(tmp_path: Path) -> None:
         "Ethane": 50,
     }
     assert {item["label"]: item["color"] for item in summary["types"]} == {
-        "Carbon": "#226F54",
-        "Crystalline": "#003D5B",
-        "Aggregate": "#DE541E",
-        "Ethane": "#96BBBB",
+        "Carbon": "#915794",
+        "Crystalline": "#327ca3",
+        "Aggregate": "#de4d25",
+        "Ethane": "#6f8270",
     }
 
 

@@ -29,10 +29,10 @@ TYPE_ID_TO_DISPLAY = {
 }
 
 TYPE_ID_TO_COLOR_HEX = {
-    1: "#226F54",
-    2: "#003D5B",
-    3: "#DE541E",
-    4: "#96BBBB",
+    1: "#915794",
+    2: "#327ca3",
+    3: "#de4d25",
+    4: "#6f8270",
 }
 
 TYPE_MANIFEST_COLUMNS = (

@@ -55,11 +55,11 @@ IMAGE_ARTIFACT_SUFFIXES = {".png", ".jpg", ".jpeg"}
 DEFAULT_PUBLIC_CHECKPOINT_RELATIVE = Path("pretrained_models") / "cryoFILTER_FULL.pt"
 CONTAMINATION_TYPE_LABELS = ("Carbon", "Crystalline", "Aggregate", "Ethane")
 CONTAMINATION_TYPE_COLORS = {
-    "Carbon": "#226F54",
-    "Support": "#226F54",
-    "Crystalline": "#003D5B",
-    "Aggregate": "#DE541E",
-    "Ethane": "#96BBBB",
+    "Carbon": "#915794",
+    "Support": "#915794",
+    "Crystalline": "#327ca3",
+    "Aggregate": "#de4d25",
+    "Ethane": "#6f8270",
 }
 
 

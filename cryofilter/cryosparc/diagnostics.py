@@ -11,13 +11,13 @@ from cryofilter.cryosparc.protocol.manifests import write_json_model
 from cryofilter.cryosparc.protocol.models import DiagnosticAsset, DiagnosticsManifest
 
 TYPE_COLORS = {
-    "Carbon": "#226F54",
-    "Crystalline": "#003D5B",
-    "Aggregate": "#DE541E",
-    "Ethane": "#96BBBB",
+    "Carbon": "#915794",
+    "Crystalline": "#327ca3",
+    "Aggregate": "#de4d25",
+    "Ethane": "#6f8270",
 }
 TYPE_COLOR_ALIASES = {
-    "Support": "#226F54",
+    "Support": "#915794",
 }
 DEFAULT_MAX_OVERLAY_IMAGES = 10
 

@@ -43,10 +43,10 @@ const state = {
 
 const ANNOTATION_TYPE_COLORS = {
   "": "#c9b7ff",
-  1: "#226F54",
-  2: "#003D5B",
-  3: "#DE541E",
-  4: "#96BBBB",
+  1: "#915794",
+  2: "#327ca3",
+  3: "#de4d25",
+  4: "#6f8270",
 };
 const ANNOTATION_ERASE_COLOR = "#E05A5A";
 
