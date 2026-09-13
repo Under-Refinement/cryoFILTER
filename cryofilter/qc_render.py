@@ -18,10 +18,10 @@ BACKGROUND_RGB = (245, 245, 245)
 PANEL_GAP_RGB = (25, 25, 25)
 PROBABILITY_COLORMAP = "viridis"
 TYPE_MASK_COLORS_RGB = {
-    1: (34, 111, 84),
-    2: (0, 61, 91),
-    3: (222, 84, 30),
-    4: (150, 187, 187),
+    1: (145, 87, 148),
+    2: (50, 124, 163),
+    3: (222, 77, 37),
+    4: (111, 130, 112),
     255: LIGHT_PURPLE_RGB,
 }
 
