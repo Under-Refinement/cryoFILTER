@@ -25,6 +25,10 @@
             <svg class="tab-icon" viewBox="0 0 24 24" aria-hidden="true"><ellipse cx="12" cy="6" rx="8" ry="3" /><path d="M4 6v6c0 1.7 3.6 3 8 3s8 -1.3 8 -3v-6" /><path d="M4 12v6c0 1.7 3.6 3 8 3s8 -1.3 8 -3v-6" /></svg>
             <span>CryoSPARC</span>
           </button>
+          <button class="tab" data-tab="otf">
+            <svg class="tab-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M12 6v6l4 2" /></svg>
+            <span>OTF</span>
+          </button>
           <button class="tab" data-tab="inference">
             <svg class="tab-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 21l12 -12" /><path d="M15 6l3 3" /><path d="M9 3l1 3l3 1l-3 1l-1 3l-1 -3l-3 -1l3 -1z" /><path d="M19 14l.5 1.5l1.5 .5l-1.5 .5l-.5 1.5l-.5 -1.5l-1.5 -.5l1.5 -.5z" /></svg>
             <span>Inference</span>
@@ -132,8 +136,49 @@
           </form>
         </section>
 
+        <section id="otf" class="panel">
+          <form id="otfRunForm" class="form-grid" data-kind="cryosparc_otf" data-uses-cryosparc-connection>
+            <input name="cryosparc_base_url" type="hidden" />
+            <input name="cryosparc_email" type="hidden" />
+            <input name="cryosparc_password" type="hidden" />
+            <div class="section-title">
+              <div><h2>cryoFILTER-OTFwMC</h2><p>Segment micrographs as Patch Motion Correction writes them. Connect in the CryoSPARC tab first.</p></div>
+              <button type="submit">Start OTF</button>
+            </div>
+            <label><span class="label-row">Project</span><input name="project" required placeholder="P1" /></label>
+            <label><span class="label-row">Workspace</span><input name="workspace" required placeholder="W2" /></label>
+            <label><span class="label-row">Motion-correction job <span class="help" tabindex="0" data-tip="CryoSPARC 5 Patch Motion Correction job. You can start OTF while it is queued or running. The project files must be readable on this machine.">?</span></span><input name="micrographs" required placeholder="J12" /></label>
+            <label><span class="label-row">GPU devices <span class="help" tabindex="0" data-tip="Comma-separated GPU IDs reserved for cryoFILTER, for example 1,2. Choose devices separate from motion correction. With CUDA_VISIBLE_DEVICES set, use IDs from that allocation. One GPU supports segmentation only.">?</span></span><input name="gpu_devices" id="otfGpuDevices" required placeholder="1 or 1,2" /></label>
+            <label><span class="label-row">CPUs <span class="help" tabindex="0" data-tip="Total CPU budget shared among cryoFILTER GPU workers. Leave CPU capacity available for motion correction.">?</span></span><input name="num_cpus" type="number" min="1" value="8" required /></label>
+            <label class="check"><input name="run_typing" id="otfRunTyping" type="checkbox" disabled /><span class="label-row">Run typing <span class="help" tabindex="0" data-tip="Requires at least two GPU devices. Devices are divided between segmentation and typing, just like the CryoSPARC workflow. Binary masks become usable immediately, before typing finishes.">?</span></span></label>
+            <div class="section-title"><p id="otfAllocation">Choose GPU devices to see their allocation.</p></div>
+            <label><span class="label-row">Weights</span><input name="checkpoint" placeholder="pretrained_models/cryoFILTER_FULL.pt" /></label>
+            <label><span class="label-row">Threshold</span><input name="threshold" type="number" min="0" max="1" step="0.01" value="0.6" /></label>
+            <label><span class="label-row">Profile</span><select name="inference_profile"><option>balanced</option><option>fast</option><option>quality</option></select></label>
+            <label><span class="label-row">Typing accuracy</span><select name="typing_sample_stride_px"><option value="64">Fast (default)</option><option value="32">Balanced</option><option value="16">Highest accuracy</option></select></label>
+            <label><span class="label-row">Output root</span><input name="local_run_root" placeholder="./cryofilter_runs/otf" /></label>
+            <label><span class="label-row">Output budget (GiB) <span class="help" tabindex="0" data-tip="Caps generated masks, probability maps and previews. Micrographs are read in place. If this budget is reached, completed masks are preserved and the run can be resumed with a larger budget.">?</span></span><input name="max_output_gb" type="number" min="1" value="25" /></label>
+            <label><span class="label-row">Poll interval (seconds)</span><input name="poll_seconds" type="number" min="1" value="2" /></label>
+            <label class="check"><input name="previews" type="checkbox" checked /><span>Live previews</span></label>
+          </form>
+        </section>
+
         <section id="filter-picks" class="panel">
-          <form class="form-grid" data-kind="filter_particles">
+          <div class="topbar"><label>Mask source <select id="filterPicksSource"><option value="cryosparc">CryoSPARC OTF job</option><option value="files">Local files</option></select></label></div>
+          <form class="form-grid" data-kind="cryosparc_filter_otf" data-filter-source="cryosparc" data-uses-cryosparc-connection>
+            <input name="cryosparc_base_url" type="hidden" />
+            <input name="cryosparc_email" type="hidden" />
+            <input name="cryosparc_password" type="hidden" />
+            <div class="section-title"><div><h2>Filter Picks</h2><p>Use the masks from your OTF card. Connect in the CryoSPARC tab first.</p></div><button type="submit">Filter picks</button></div>
+            <label><span>Project</span><input name="project" required placeholder="P1" /></label>
+            <label><span>Workspace</span><input name="workspace" required placeholder="W2" /></label>
+            <label><span class="label-row">OTF cryoFILTER job <span class="help" tabindex="0" data-tip="The cryoFILTER-OTFwMC card number in this project. Masks and micrograph geometry are located automatically, including while the card is still running.">?</span></span><input name="otf_job" required placeholder="J13" /></label>
+            <label><span class="label-row">Particle job <span class="help" tabindex="0" data-tip="Completed particle-picking or extraction job. J20 or J20:particles is accepted. Accepted and rejected particles are published in a new CryoSPARC card with their metadata preserved.">?</span></span><input name="particles" required placeholder="J20 or J20:particles" /></label>
+            <label><span class="label-row">Exclusion (Å) <span class="help" tabindex="0" data-tip="Reject particle centers at or within this distance from a contaminated pixel. Uses the original micrograph geometry recorded by OTF.">?</span></span><input name="particle_exclusion_distance_angstrom" type="number" min="0" step="1" value="100" /></label>
+            <label><span class="label-row">Missing masks <span class="help" tabindex="0" data-tip="Stop reports unfinished or missing masks. Separate pending output filters available masks now and publishes remaining particles as particles_pending, so they can be filtered again later.">?</span></span><select name="missing_masks"><option value="error">Stop and report missing masks</option><option value="pending">Separate pending particles</option></select></label>
+            <label><span>Output directory</span><input name="output_dir" placeholder="Automatic new run directory" /></label>
+          </form>
+          <form class="form-grid" data-kind="filter_particles" data-filter-source="files" hidden>
             <div class="section-title">
               <h2>Filter Picks</h2>
               <button type="submit">Launch</button>
@@ -362,6 +407,6 @@
       </main>
     </div>
     <script src="/static/connect.js?v=20260909-live-summary-ui"></script>
-    <script src="/static/app.js?v=20260909-live-summary-ui"></script>
+    <script src="/static/app.js?v=20260913-otf-motion"></script>
   </body>
 </html>

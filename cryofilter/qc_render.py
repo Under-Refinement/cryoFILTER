@@ -459,6 +459,7 @@ def render_particle_overlay_png(
     include_typed_mask_panel: bool = False,
     include_probability_panel: bool = False,
     panel_gap_px: int = 16,
+    white_background: bool = False,
 ) -> Path:
     """Write one particle-filtering QC overlay PNG."""
 
@@ -479,7 +480,7 @@ def render_particle_overlay_png(
         coords,
         np.asarray(keep, dtype=bool),
         diameter_px=float(particle_diameter_px),
-        label=label,
+        label=None if white_background else label,
         aa=True,
         mask_alpha=float(mask_alpha),
     )
@@ -490,12 +491,31 @@ def render_particle_overlay_png(
     if include_typed_mask_panel:
         if typed_mask is None:
             raise ValueError("include_typed_mask_panel=True requires typed_mask")
-        panels.append(render_typed_mask_frame(img8, typed_mask, label=typed_mask_label))
+        panels.append(render_typed_mask_frame(img8, typed_mask, label=None if white_background else typed_mask_label))
     if include_probability_panel:
         if probability_map is None:
             raise ValueError("include_probability_panel=True requires probability_map")
         panels.append(render_probability_frame(probability_map, tuple(img8.shape)))
-    if len(panels) > 1:
+    if white_background:
+        # Opt-in export presentation. Keep scientific pixels untouched and put
+        # captions above each panel, on white, rather than over the micrograph.
+        from PIL import ImageDraw
+        captions = (["Raw micrograph"] if include_raw_panel else []) + ["Contamination mask"]
+        if include_typed_mask_panel:
+            captions.append("Typed contamination")
+        if include_probability_panel:
+            captions.append("Probability")
+        titled = []
+        font_size = max(16, int(round(img8.shape[0] * 0.035)))
+        font = _load_label_font(font_size)
+        caption_height = font_size + 20
+        for panel, caption in zip(panels, captions):
+            canvas = Image.new("RGB", (panel.shape[1], panel.shape[0] + caption_height), "white")
+            canvas.paste(Image.fromarray(panel), (0, caption_height))
+            ImageDraw.Draw(canvas).text((8, 6), caption, fill="black", font=font)
+            titled.append(np.asarray(canvas))
+        frame = horizontal_panels(titled, gap=int(panel_gap_px), fill=(255, 255, 255))
+    elif len(panels) > 1:
         frame = horizontal_panels(panels, gap=int(panel_gap_px))
     path = Path(output_path).expanduser()
     path.parent.mkdir(parents=True, exist_ok=True)

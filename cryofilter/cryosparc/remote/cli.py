@@ -100,6 +100,8 @@ def add_subparser(subparsers: argparse._SubParsersAction) -> None:
     )
     cryosparc.add_argument("--json", action="store_true", help="Write valid JSON to stdout.")
     sub = cryosparc.add_subparsers(dest="cryosparc_command", required=True)
+    from cryofilter.cryosparc.otf_cli import add_parsers as add_otf_parsers
+    add_otf_parsers(sub)
 
     sub.add_parser("doctor", help="Check local machine, SSH, bridge, and CryoSPARC health.")
 
@@ -2755,7 +2757,7 @@ def _run_cryosparc(args: argparse.Namespace) -> int:
         return _run_build_diagnostics(args)
     if command == "attach-diagnostics":
         return _run_attach_diagnostics(args, config)
-    if command in {"predict", "finalize-run", "resume", "finalize-from-run"}:
+    if command in {"predict", "finalize-run", "resume", "finalize-from-run", "otf", "filter-otf"}:
         # App cancellation sends SIGTERM. Unwind local subprocess supervisors
         # so their inference/typing worker groups are stopped and reaped.
         def terminate(_signum, _frame):
@@ -2765,6 +2767,12 @@ def _run_cryosparc(args: argparse.Namespace) -> int:
         if threading.current_thread() is threading.main_thread():
             previous = signal.signal(signal.SIGTERM, terminate)
         try:
+            if command == "otf":
+                from cryofilter.cryosparc.otf import run_otf
+                return run_otf(args, config)
+            if command == "filter-otf":
+                from cryofilter.cryosparc.otf_filter import run_filter
+                return run_filter(args, config)
             return _run_predict(args, config) if command == "predict" else _run_finalize_run(args, config)
         finally:
             if previous is not None:

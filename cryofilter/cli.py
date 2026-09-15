@@ -8,7 +8,7 @@ import json
 import multiprocessing as mp
 import os
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import Callable, Iterable, Optional, Sequence
 
 import numpy as np
 
@@ -1266,6 +1266,8 @@ def _run_infer(
     mrc_paths_override: Optional[Sequence[Path]] = None,
     finalize: bool = True,
     live_summary_path: Optional[Path] = None,
+    input_stream: Optional[Iterable[dict]] = None,
+    on_result: Optional[Callable[[dict], None]] = None,
 ) -> int | dict[str, object]:
     import torch
     from models.bad_region_detector import create_model
@@ -1325,12 +1327,14 @@ def _run_infer(
         map_output_dir.mkdir(parents=True, exist_ok=True)
     if args.render_images:
         image_output_dir.mkdir(parents=True, exist_ok=True)
-    mrc_paths = (
+    if input_stream is not None and (finalize or args.particle_file or args.skip_existing):
+        raise ValueError("Streaming inference requires finalize=False, no particles, and no skip-existing")
+    mrc_paths = [] if input_stream is not None else (
         list(mrc_paths_override)
         if mrc_paths_override is not None
         else _collect_mrc_paths(input_path, recursive=args.recursive)
     )
-    if not mrc_paths:
+    if not mrc_paths and input_stream is None:
         raise ValueError("No micrographs were assigned to this inference worker")
 
     particle_overlay_context: Optional[dict[str, object]] = None
@@ -1633,10 +1637,17 @@ def _run_infer(
         else (output_dir / "inference_summary.json" if finalize else None)
     )
 
-    for idx, mrc_path in enumerate(mrc_paths, start=1):
-        stem = mrc_path.stem
+    inputs = input_stream if input_stream is not None else ({"path": path} for path in mrc_paths)
+    processed_count = 0
+    for idx, stream_input in enumerate(inputs, start=1):
+        processed_count = idx
+        mrc_path = Path(stream_input["path"])
+        stem = str(stream_input.get("stem") or mrc_path.stem)
+        progress_total = len(mrc_paths) if input_stream is None else "stream"
         prob_npy = map_output_dir / f"{stem}_prob.npy"
         mask_npy = map_output_dir / f"{stem}_mask.npy"
+        if input_stream is not None:
+            mask_npy = mask_npy.with_suffix(".npz")
         prob_mrc = output_dir / f"{stem}_prob.mrc"
         mask_mrc = output_dir / f"{stem}_mask.mrc"
         diagnostic_png = image_output_dir / f"{stem}_clean_filtering.png"
@@ -1691,7 +1702,9 @@ def _run_infer(
             continue
 
         image, header_pixel_size = _load_mrc_2d(mrc_path)
-        pixel_size = args.pixel_size_angstrom if args.pixel_size_angstrom is not None else header_pixel_size
+        pixel_size = stream_input.get("pixel_size_angstrom") or (
+            args.pixel_size_angstrom if args.pixel_size_angstrom is not None else header_pixel_size
+        )
         policy = _resolve_policy(pixel_size)
         if int(policy.overlap) >= int(args.patch_size):
             raise ValueError(
@@ -1701,7 +1714,7 @@ def _run_infer(
 
         px_label = "unknown" if pixel_size is None else f"{float(pixel_size):.4f} A/px"
         targets_label = ",".join(f"{float(v):.3f}" for v in policy.multiscale_targets)
-        print(f"[{idx}/{len(mrc_paths)}] {mrc_path.name}", flush=True)
+        print(f"[{idx}/{progress_total}] {mrc_path.name}", flush=True)
         print(
             f"  pixel_size={px_label}; policy={policy.policy_name}; "
             f"profile={policy.inference_profile}; target(s)={targets_label} A/px; "
@@ -1852,8 +1865,16 @@ def _run_infer(
 
         if not skip_generation:
             if needs_disk_map_outputs:
-                np.save(prob_npy, prob_map)
-                np.save(mask_npy, mask)
+                if input_stream is not None:
+                    from cryofilter.typing_cli import _save_npy_atomic
+                    from cryofilter.cryosparc.otf_state import save_mask
+
+                    preview_stride = max(1, int(np.ceil(max(prob_map.shape) / 1024)))
+                    _save_npy_atomic(prob_npy, prob_map[::preview_stride, ::preview_stride].astype(np.float16))
+                    save_mask(mask_npy, mask)
+                else:
+                    np.save(prob_npy, prob_map)
+                    np.save(mask_npy, mask)
                 prob_npy_path = str(prob_npy)
                 mask_npy_path = str(mask_npy)
 
@@ -1917,7 +1938,13 @@ def _run_infer(
                 prob_map=prob_map,
                 pixel_size_angstrom=pixel_size,
             )
-        summary["inputs"].append(input_record)
+        if input_stream is None:
+            summary["inputs"].append(input_record)
+        else:
+            input_record["mask_encoding"] = "packbits-npz"
+            input_record["probability_scope"] = "preview_only"
+        if on_result is not None:
+            on_result(input_record)
         if incremental_summary_path is not None:
             _write_inference_summary(incremental_summary_path, summary)
 
@@ -1925,7 +1952,7 @@ def _run_infer(
         _finalize_particle_overlay_contact_sheet(particle_overlay_context, args)
 
     if not finalize:
-        print(f"Finished worker inference on {len(mrc_paths)} micrograph(s).", flush=True)
+        print(f"Finished worker inference on {processed_count} micrograph(s).", flush=True)
         return summary
 
     return _finalize_inference_run(

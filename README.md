@@ -136,6 +136,8 @@ The CryoSPARC form exposes **CPUs**, **Typing workers**, and **Typing updates**.
 
 **Particle filtering:** Use Filter Picks when masks already exist and you want to filter new or re-exported particle picks without rerunning inference.
 
+**OTF with motion correction:** On a machine with direct access to the CryoSPARC project, use **OTF** to follow a queued/running CryoSPARC 5 Patch Motion Correction job. One allocated GPU runs segmentation; two or more can run segmentation alone or split between segmentation and typing. In **Filter Picks**, select **CryoSPARC OTF job** and enter the OTF card number to locate its masks automatically. See the [OTF workflow and test guide](docs/cryosparc/OTF.md).
+
 **Annotation:** Use Annotation with a local micrograph path, a CryoSPARC micrograph output, or a previous `manifest_edited.csv`. Sessions can be saved and resumed in the browser.
 
 **Fine-tuning:** Use Fine-tune after annotation. If Train IDs and Val IDs are blank, the app splits saved annotation rows 70/30. The default recipe is sized for common 24 GB GPUs and can be expanded by expert users.

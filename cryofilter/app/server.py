@@ -695,6 +695,10 @@ def build_job_spec(kind: str, payload: dict[str, Any], *, work_dir: Path) -> Job
         return _build_filter_particles_spec(payload, work_dir=work_dir)
     if kind == "cryosparc_predict":
         return _build_cryosparc_predict_spec(payload, work_dir=work_dir)
+    if kind == "cryosparc_otf":
+        return _build_otf_spec(payload, work_dir=work_dir)
+    if kind == "cryosparc_filter_otf":
+        return _build_otf_filter_spec(payload, work_dir=work_dir)
     if kind == "annotation":
         return _build_annotation_spec(payload, work_dir=work_dir)
     if kind == "train":
@@ -950,6 +954,60 @@ def _build_cryosparc_predict_spec(payload: dict[str, Any], *, work_dir: Path) ->
         },
         env=secret_env,
     )
+
+
+def _otf_connection_args(payload):
+    host, port = _instance_url_host_port(payload.get("cryosparc_base_url") or payload.get("cryosparc_url"))
+    argv = [sys.executable, "-m", "cryofilter.cli", "cryosparc", "--host", "local"]
+    _add_option(argv, "--config", payload.get("config"))
+    _add_option(argv, "--cryosparc-host", payload.get("cryosparc_host") or host)
+    _add_option(argv, "--cryosparc-base-port", payload.get("cryosparc_base_port") or port)
+    _add_option(argv, "--cryosparc-email", payload.get("cryosparc_email"))
+    env = {}
+    if _optional_str(payload.get("cryosparc_password")):
+        env["CRYOSPARC_PASSWORD"] = str(payload["cryosparc_password"])
+    return argv, env
+
+
+def _build_otf_spec(payload: dict[str, Any], *, work_dir: Path) -> JobSpec:
+    from cryofilter.cryosparc.otf_workers import allocate_devices
+    devices = _require_text(payload, "gpu_devices")
+    run_typing = _as_bool(payload.get("run_typing"), default=False)
+    allocate_devices([v.strip() for v in devices.split(",")], run_typing)
+    run_id = str(uuid.UUID(str(payload["run_id"]))) if payload.get("run_id") else str(uuid.uuid4())
+    root = _resolve_work_path(payload.get("local_run_root") or "cryofilter_runs/otf", work_dir=work_dir)
+    run_dir = root / run_id
+    argv, env = _otf_connection_args(payload)
+    argv.extend(["otf", "--project", _require_text(payload, "project"), "--workspace", _require_text(payload, "workspace"),
+                 "--micrographs", _require_text(payload, "micrographs"), "--gpu-devices", devices,
+                 "--checkpoint", _resolve_checkpoint_option(payload.get("checkpoint")),
+                 "--local-run-root", str(root), "--run-id", run_id])
+    for name in ("num_cpus", "threshold", "inference_profile", "batch_forward_size", "poll_seconds",
+                 "max_output_gb", "typing_checkpoint", "typing_sample_stride_px", "title"):
+        _add_option(argv, "--" + name.replace("_", "-"), payload.get(name))
+    if run_typing:
+        argv.append("--run-typing")
+    if not _as_bool(payload.get("previews"), default=True):
+        argv.append("--no-previews")
+    return JobSpec(kind="cryosparc_otf", title=_optional_str(payload.get("title")) or "cryoFILTER-OTFwMC",
+                   steps=[JobStep("Follow Patch Motion Correction", argv)], artifact_roots=[run_dir],
+                   metadata={"project": payload.get("project"), "workspace": payload.get("workspace"),
+                             "source_job": payload.get("micrographs"), "local_run_dir": str(run_dir),
+                             "run_typing": run_typing, "gpu_devices": devices}, env=env)
+
+
+def _build_otf_filter_spec(payload: dict[str, Any], *, work_dir: Path) -> JobSpec:
+    output = _resolve_work_path(payload.get("output_dir") or f"cryofilter_runs/filtered_picks/{uuid.uuid4()}", work_dir=work_dir)
+    argv, env = _otf_connection_args(payload)
+    argv.extend(["filter-otf", "--project", _require_text(payload, "project"),
+                 "--workspace", _require_text(payload, "workspace"), "--otf-job", _require_text(payload, "otf_job"),
+                 "--particles", _require_text(payload, "particles"), "--output-dir", str(output)])
+    _add_option(argv, "--particle-exclusion-distance-angstrom", payload.get("particle_exclusion_distance_angstrom"))
+    _add_option(argv, "--missing-masks", payload.get("missing_masks"))
+    _add_option(argv, "--title", payload.get("title"))
+    return JobSpec(kind="cryosparc_filter_otf", title="Filter picks using OTF masks", env=env,
+                   steps=[JobStep("Filter and register particles", argv)], artifact_roots=[output],
+                   metadata={"otf_job": payload.get("otf_job"), "particles": payload.get("particles"), "output_dir": str(output)})
 
 
 def _build_annotation_spec(payload: dict[str, Any], *, work_dir: Path) -> JobSpec:
@@ -1760,6 +1818,10 @@ def _build_live_summary(
     mode: str,
     count: int,
 ) -> dict[str, Any]:
+    for root in roots:
+        if (root / "index.sqlite").is_file() and (root / "cryofilter_otf.json").is_file():
+            from cryofilter.cryosparc.otf_state import monitor_summary
+            return monitor_summary(root / "index.sqlite", mode=mode, count=count)
     n_images_total = _transfer_manifest_micrograph_count(roots)
     inference_summary = _build_inference_live_summary(
         roots,
@@ -2080,7 +2142,8 @@ class AppState:
             for directory, subdirs, filenames in os.walk(root):
                 # Hidden inference maps and feature caches can contain thousands
                 # of files, none of which are displayable monitor artifacts.
-                subdirs[:] = [name for name in subdirs if not name.startswith(".")]
+                subdirs[:] = [name for name in subdirs if not name.startswith(".")
+                              and not (meta.get("kind") == "cryosparc_otf" and name == "inference")]
                 paths.extend(
                     Path(directory) / name for name in filenames
                     if not name.startswith(".") and Path(name).suffix.lower() in ARTIFACT_SUFFIXES

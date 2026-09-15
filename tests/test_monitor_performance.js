@@ -30,6 +30,41 @@ async function main() {
   assert.equal(context.monitorPhase(job, complete + "\nPhase: upload/register results to CryoSPARC.", summary), "Upload/register results");
   assert.equal(context.monitorPhase({ ...job, status: "succeeded" }, complete, summary), "done");
 
+  // OTF uses separately allocated GPU IDs and cannot type on a single GPU.
+  const devices = { value: "1" };
+  const typing = { checked: true, disabled: false };
+  const allocation = { textContent: "" };
+  elements.set("#otfGpuDevices", devices);
+  elements.set("#otfRunTyping", typing);
+  elements.set("#otfAllocation", allocation);
+  context.updateOtfAllocation();
+  assert.equal(typing.disabled, true);
+  assert.equal(typing.checked, false);
+  devices.value = "1,2,3";
+  context.updateOtfAllocation();
+  assert.equal(typing.disabled, false);
+  assert.match(allocation.textContent, /Segmentation: 1, 2, 3. Typing: off/);
+  typing.checked = true;
+  context.updateOtfAllocation();
+  assert.match(allocation.textContent, /Segmentation: 1. Typing: 2, 3/);
+  devices.value = "1,1";
+  context.updateOtfAllocation();
+  assert.equal(typing.disabled, true);
+  assert.equal(typing.checked, false);
+  const forms = ["cryosparc", "files"].map((filterSource) => ({ dataset: { filterSource }, hidden: false }));
+  context.document.querySelectorAll = (name) => name === "[data-filter-source]" ? forms : [];
+  elements.set("#filterPicksSource", { value: "cryosparc" });
+  context.updateFilterPicksSource();
+  assert.equal(forms[0].hidden, false);
+  assert.equal(forms[1].hidden, true);
+  elements.get("#filterPicksSource").value = "files";
+  context.updateFilterPicksSource();
+  assert.equal(forms[0].hidden, true);
+  assert.equal(forms[1].hidden, false);
+  assert.equal(context.monitorPhase({ ...job, kind: "cryosparc_otf" }, "", {
+    otf: { phase: "waiting_for_motion_correction" },
+  }), "Waiting for motion correction");
+
   // A slow API request must not cause setInterval to queue more monitor polls.
   let release;
   let requests = 0;

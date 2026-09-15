@@ -87,3 +87,28 @@ def test_particle_overlay_renderer_writes_png_and_contact_sheet(tmp_path: Path) 
     assert sheet_path.exists()
     sheet = Image.open(sheet_path)
     assert sheet.size == (240, 120)
+
+
+def test_white_export_preserves_scientific_panels_and_default_gaps(tmp_path):
+    rng = np.random.default_rng(91)
+    raw = rng.normal(size=(120, 160)).astype(np.float32)
+    mask = (raw > 0.8).astype(np.uint8)
+    kwargs = dict(image=raw, mask=mask, coords_xy=np.empty((0, 2)), keep=np.empty(0, dtype=bool),
+                  probability_map=(raw - raw.min()) / np.ptp(raw), typed_mask=mask,
+                  include_raw_panel=True, include_probability_panel=True, include_typed_mask_panel=True,
+                  typed_mask_label=None, max_display_dim=160)
+    ui = render_particle_overlay_png(**kwargs, output_path=tmp_path / "ui.png")
+    exported = render_particle_overlay_png(**kwargs, output_path=tmp_path / "white.png", white_background=True)
+    with Image.open(ui) as picture:
+        dark = np.asarray(picture)
+    with Image.open(exported) as picture:
+        white = np.asarray(picture)
+    header = white.shape[0] - dark.shape[0]
+    assert header > 0
+    for i in range(4):
+        x = i * (raw.shape[1] + 16)
+        assert np.array_equal(white[header:, x:x + 160], dark[:, x:x + 160])
+        assert np.all(white[0, x:x + 160] == 255)
+        if i < 3:
+            assert np.all(dark[:, x + 160:x + 176] == 25)
+            assert np.all(white[:, x + 160:x + 176] == 255)

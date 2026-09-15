@@ -2043,6 +2043,10 @@ async function renderArtifacts() {
 
 function monitorPhase(job, logText, liveSummary) {
   if (!["queued", "running"].includes(job.status)) return statusText(job.status);
+  if (job.kind === "cryosparc_otf") {
+    const phases = { waiting_for_motion_correction: "Waiting for motion correction", processing: "Processing new micrographs", draining: "Finishing available micrographs", completed: "Complete", failed: "Failed", stopped: "Stopped" };
+    return phases[liveSummary?.otf?.phase] || "Starting OTF";
+  }
   const text = String(logText || "");
   if (text.includes("Phase: upload/register")) return "Upload/register results";
   if (text.includes("Phase: GPU inference complete") || text.includes("Phase: final typing")) return "Final typing/finalization";
@@ -2057,13 +2061,22 @@ function monitorPhase(job, logText, liveSummary) {
 function renderMetrics(job, logText, artifactCount, liveSummary = null) {
   const metrics = $("#metricsGrid");
   const rejected = parseRejectedMetric(logText);
-  const timePerMic = timePerMicrographMetric(job, logText, liveSummary);
+  const timePerMic = job.kind === "cryosparc_otf" ? null : timePerMicrographMetric(job, logText, liveSummary);
   const rows = [
     { label: "status", value: statusText(job.status) },
     { label: "phase", value: monitorPhase(job, logText, liveSummary) },
     { label: "runtime", value: durationText(job.started_at || job.created_at, job.ended_at) },
     { label: "artifacts", value: String(artifactCount) },
   ];
+  if (liveSummary?.otf) {
+    const otf = liveSummary.otf;
+    rows.push({ label: "CryoSPARC card", value: otf.job_uid || "Creating" },
+      { label: "segmented", value: String(otf.segmented || 0) },
+      { label: "segmentation pending", value: String(otf.segmentation_pending || 0) });
+    if (otf.run_typing) rows.push({ label: "typed", value: String(otf.typed || 0) }, { label: "typing pending", value: String(otf.typing_pending || 0) });
+    const seconds = otf.seconds_per_micrograph?.segmentation;
+    if (seconds > 0) rows.push({ label: "segmentation / micrograph", value: `${seconds.toFixed(1)}s per worker` });
+  }
   if (timePerMic) rows.push(timePerMic);
   if (rejected) rows.push(rejected);
   metrics.hidden = false;
@@ -2085,7 +2098,7 @@ function syncLiveSummaryControls() {
 }
 
 function liveSummaryJobKind(job) {
-  return ["infer", "cryosparc_predict", "type"].includes(job?.kind || "");
+  return ["infer", "cryosparc_predict", "cryosparc_otf", "type"].includes(job?.kind || "");
 }
 
 async function renderLiveSummary(job) {
@@ -2302,6 +2315,8 @@ async function launchJob(form) {
   if (
     (
       kind === "cryosparc_predict" ||
+      kind === "cryosparc_otf" ||
+      kind === "cryosparc_filter_otf" ||
       (kind === "annotation" && payload.source_mode === "cryosparc") ||
       (kind === "train" && payload.mic_source_mode === "cryosparc")
     ) &&
@@ -2309,6 +2324,7 @@ async function launchJob(form) {
   ) {
     resetCryosparcConnection();
     setCryosparcStatus("Connect to CryoSPARC before launching.", "error");
+    document.querySelector('[data-tab="cryosparc"]').click();
     return;
   }
   const job = await api("/api/jobs", {
@@ -2355,7 +2371,32 @@ function bindForms() {
   });
 }
 
+function updateOtfAllocation() {
+  const field = $("#otfGpuDevices");
+  const typing = $("#otfRunTyping");
+  const message = $("#otfAllocation");
+  if (!field || !typing || !message) return;
+  const devices = field.value.split(",").map((value) => value.trim()).filter(Boolean);
+  const valid = devices.length === new Set(devices).size;
+  typing.disabled = !valid || devices.length < 2;
+  if (typing.disabled) typing.checked = false;
+  if (!devices.length) { message.textContent = "Choose GPU devices to see their allocation."; return; }
+  if (!valid) { message.textContent = "Choose distinct GPU devices."; return; }
+  const split = typing.checked ? Math.floor(devices.length / 2) : devices.length;
+  message.textContent = `Segmentation: ${devices.slice(0, split).join(", ")}. Typing: ${typing.checked ? devices.slice(split).join(", ") : "off"}.`;
+}
+
+function updateFilterPicksSource() {
+  const mode = $("#filterPicksSource")?.value || "cryosparc";
+  $$("[data-filter-source]").forEach((form) => { form.hidden = form.dataset.filterSource !== mode; });
+}
+
 function bindControls() {
+  $("#otfGpuDevices")?.addEventListener("input", updateOtfAllocation);
+  $("#otfRunTyping")?.addEventListener("change", updateOtfAllocation);
+  $("#filterPicksSource")?.addEventListener("change", updateFilterPicksSource);
+  updateOtfAllocation();
+  updateFilterPicksSource();
   const cryosparcBox = $("#cryosparcConnectForm");
   if (cryosparcBox && cryosparcBox.dataset.connectBound !== "1") {
     $("#cryosparcConnectButton")?.addEventListener("click", async (event) => {
