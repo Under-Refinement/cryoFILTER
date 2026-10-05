@@ -134,6 +134,7 @@ p {
 }
 
 .tab,
+.tutorial-link,
 button {
   border: 0.5px solid transparent;
   border-radius: var(--radius);
@@ -145,7 +146,8 @@ button {
   font-weight: 500;
 }
 
-.tab {
+.tab,
+.tutorial-link {
   display: grid;
   grid-template-columns: 16px 1fr;
   gap: 9px;
@@ -168,8 +170,14 @@ button {
 }
 
 .tab.active,
-.tab:hover {
+.tab:hover,
+.tutorial-link:hover {
   background: var(--bg-2);
+}
+
+.tutorial-link {
+  margin-top: 10px;
+  text-decoration: none;
 }
 
 .tab.active {
@@ -350,6 +358,10 @@ button {
 }
 
 .status-dot.queued {
+  background: var(--warn);
+}
+
+.status-dot.canceling {
   background: var(--warn);
 }
 

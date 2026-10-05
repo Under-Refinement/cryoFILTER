@@ -72,12 +72,19 @@ The lowercase command is equivalent if preferred: `cryofilter app`.
   `cryoFILTER`, and push accepted/rejected particles plus diagnostics back to
   a CryoSPARC External Job. This is the first tab because it is the expected
   processing-server workflow.
-- Inference: generate probability maps and binary contamination masks from
-  micrographs. Particle files are optional; leaving Particles blank runs mask
-  generation only.
-- Filter Picks: filter a CryoSPARC `.cs` or RELION `.star` particle file using
-  pre-existing `<micrograph-stem>_mask.npy` files without rerunning neural
-  network inference.
+- Inference: generate probability maps and binary contamination masks from a
+  local path or a completed CryoSPARC micrograph output. Local particle files
+  and CryoSPARC particle outputs are optional; leaving particles blank runs
+  mask generation only. By default, a CryoSPARC-backed run publishes a live
+  External Job with progress previews, a connectable `micrographs` output, and
+  a reusable mask index. Its optional, default-enabled typing stage splits two
+  or more requested GPUs between segmentation and live typing, like OTF, and
+  updates both the app subtype charts and the card's typed five-panel previews.
+  One-GPU runs type after segmentation to avoid memory contention.
+- Filter Picks: filter a completed CryoSPARC particle job from an Inference or
+  OTF mask card and publish accepted/rejected outputs in a new External Job. It
+  can also filter a CryoSPARC `.cs` or RELION `.star` file using pre-existing
+  `<micrograph-stem>_mask.npy` files.
 - Monitor: live job list, command log, throughput metrics, and output artifact
   previews.
 - Annotation: creates or resumes an annotation manifest from local

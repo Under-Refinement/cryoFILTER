@@ -35,6 +35,9 @@ const state = {
     suppressNextClick: false,
     dirty: false,
     loading: false,
+    sourceOutputKey: "",
+    sourceOutputs: [],
+    sourceOutputPromise: null,
     view: { ...ANNOTATION_VIEW_DEFAULTS },
     viewByKey: {},
     adjustedImage: null,
@@ -206,6 +209,19 @@ function resetCryosparcConnection() {
   $("#cryosparcConnectForm input[name='cryosparc_base_url'], #cryosparcConnectForm [data-credential-name='cryosparc_base_url']")?.focus();
 }
 
+function updateInferenceSourceFields() {
+  const form = $("#inferenceForm");
+  if (!form) return;
+  const mode = form.elements.source_mode?.value || "local";
+  $$('[data-inference-source]', form).forEach((container) => {
+    const visible = container.dataset.inferenceSource === mode;
+    container.hidden = !visible;
+    for (const element of Array.from(container.querySelectorAll("input, select"))) {
+      element.disabled = !visible;
+    }
+  });
+}
+
 function updateAnnotationSourceFields() {
   const form = $("#annotationForm");
   if (!form) return;
@@ -217,6 +233,111 @@ function updateAnnotationSourceFields() {
       element.disabled = !visible;
     }
   });
+  const output = $("#annotationCryosparcOutput");
+  if (output) {
+    output.disabled = mode !== "cryosparc" || state.annotation.sourceOutputs.length === 0;
+  }
+}
+
+function parseCryosparcOutputRef(value) {
+  const text = String(value || "").trim();
+  const separator = text.indexOf(":");
+  const jobUid = (separator < 0 ? text : text.slice(0, separator)).trim().toUpperCase();
+  const outputName = separator < 0 ? "" : text.slice(separator + 1).trim();
+  return { jobUid, outputName };
+}
+
+function resetAnnotationCryosparcOutputs(message = "Enter a job to load outputs") {
+  state.annotation.sourceOutputKey = "";
+  state.annotation.sourceOutputs = [];
+  state.annotation.sourceOutputPromise = null;
+  const output = $("#annotationCryosparcOutput");
+  if (!output) return;
+  output.innerHTML = `<option value="">${escapeHtml(message)}</option>`;
+  output.disabled = true;
+}
+
+function renderAnnotationCryosparcOutputs(outputs, selected = "") {
+  const output = $("#annotationCryosparcOutput");
+  if (!output) return;
+  const names = Array.from(new Set((outputs || []).map((name) => String(name).trim()).filter(Boolean)));
+  const prompt = names.length > 1 ? "Choose an output..." : "No outputs found";
+  output.innerHTML = `${names.length > 1 ? `<option value="">${prompt}</option>` : ""}${names.map((name) => (
+    `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`
+  )).join("")}`;
+  const selection = names.includes(selected) ? selected : (names.length === 1 ? names[0] : "");
+  output.value = selection;
+  output.disabled = names.length === 0 || $("#annotationSourceMode")?.value !== "cryosparc";
+}
+
+async function loadAnnotationCryosparcOutputs(form) {
+  const projectUid = String(form.elements.cryosparc_project?.value || "").trim().toUpperCase();
+  const parsed = parseCryosparcOutputRef(form.elements.cryosparc_micrographs?.value);
+  if (!/^P\d+$/.test(projectUid) || !/^J\d+$/.test(parsed.jobUid)) {
+    resetAnnotationCryosparcOutputs("Enter a project and job to load outputs");
+    return [];
+  }
+
+  const key = `${projectUid}/${parsed.jobUid}`;
+  if (state.annotation.sourceOutputKey === key && state.annotation.sourceOutputs.length) {
+    const selected = parsed.outputName || $("#annotationCryosparcOutput")?.value || "";
+    renderAnnotationCryosparcOutputs(state.annotation.sourceOutputs, selected);
+    return state.annotation.sourceOutputs;
+  }
+  if (state.annotation.sourceOutputKey === key && state.annotation.sourceOutputPromise) {
+    return state.annotation.sourceOutputPromise;
+  }
+
+  state.annotation.sourceOutputKey = key;
+  state.annotation.sourceOutputs = [];
+  renderAnnotationCryosparcOutputs([]);
+  setAnnotationLaunchStatus(`Loading outputs from ${parsed.jobUid}...`);
+  const request = {
+    cryosparc_base_url: form.elements.cryosparc_base_url?.value || "",
+    cryosparc_email: form.elements.cryosparc_email?.value || "",
+    cryosparc_password: form.elements.cryosparc_password?.value || "",
+    project_uid: projectUid,
+    job_uid: parsed.jobUid,
+  };
+  const promise = api("/api/cryosparc/job-outputs", {
+    method: "POST",
+    body: JSON.stringify(request),
+  }).then((result) => {
+    const outputs = Array.isArray(result.outputs) ? result.outputs : [];
+    state.annotation.sourceOutputs = outputs;
+    state.annotation.sourceOutputPromise = null;
+    renderAnnotationCryosparcOutputs(outputs, parsed.outputName);
+    if (outputs.length > 1 && !$("#annotationCryosparcOutput")?.value) {
+      setAnnotationLaunchStatus(`Choose which ${parsed.jobUid} output to annotate.`);
+    } else if (outputs.length) {
+      setAnnotationLaunchStatus(`${parsed.jobUid} outputs loaded.`, "ok");
+    }
+    return outputs;
+  }).catch((error) => {
+    resetAnnotationCryosparcOutputs("Could not load outputs");
+    setAnnotationLaunchStatus(error.message, "error");
+    throw error;
+  });
+  state.annotation.sourceOutputPromise = promise;
+  return promise;
+}
+
+async function resolveAnnotationCryosparcOutput(form, payload) {
+  const parsed = parseCryosparcOutputRef(payload.cryosparc_micrographs);
+  const projectUid = String(payload.cryosparc_project || "").trim().toUpperCase();
+  const explicitNonDefault = parsed.outputName && parsed.outputName !== "micrographs";
+  if (explicitNonDefault && state.annotation.sourceOutputKey !== `${projectUid}/${parsed.jobUid}`) {
+    return `${parsed.jobUid}:${parsed.outputName}`;
+  }
+
+  await loadAnnotationCryosparcOutputs(form);
+  const selected = $("#annotationCryosparcOutput")?.value || "";
+  if (!selected) {
+    setAnnotationLaunchStatus(`Choose which ${parsed.jobUid} output to annotate.`, "error");
+    $("#annotationCryosparcOutput")?.focus();
+    return null;
+  }
+  return `${parsed.jobUid}:${selected}`;
 }
 
 function updateTrainingMicrographSourceFields() {
@@ -264,6 +385,12 @@ async function launchAnnotationSession(form, payload) {
     setCryosparcStatus("Connect to CryoSPARC before creating an annotation session.", "error");
     document.querySelector('[data-tab="cryosparc"]').click();
     return;
+  }
+  if (payload.source_mode === "cryosparc") {
+    const micrographsRef = await resolveAnnotationCryosparcOutput(form, payload);
+    if (!micrographsRef) return;
+    payload.cryosparc_micrographs = micrographsRef;
+    delete payload.cryosparc_output;
   }
   setAnnotationLaunchStatus("Creating annotation session...");
   const session = await api("/api/annotation/sessions", {
@@ -1860,6 +1987,7 @@ function timePerMicrographMetric(job, logText, liveSummary = null) {
 function jobSubline(job) {
   const runtime = durationText(job.started_at || job.created_at, job.ended_at);
   const status = statusText(job.status);
+  if (job.cancel_requested && ["queued", "running"].includes(job.status)) return `canceling | ${runtime}`;
   if (job.status === "succeeded") return `done | ${runtime}`;
   if (job.status === "failed") return `failed | code ${job.returncode ?? "unknown"}`;
   if (job.status === "canceled") return `canceled | ${runtime}`;
@@ -1905,9 +2033,9 @@ function renderJobs() {
   list.innerHTML = state.jobs.map((job) => `
     <button class="job-row ${state.selected === job.id ? "active" : ""}" data-job="${job.id}">
       <span class="job-main">
-        <span class="status-dot ${classToken(job.status)}" aria-hidden="true"></span>
+        <span class="status-dot ${classToken(job.cancel_requested ? "canceling" : job.status)}" aria-hidden="true"></span>
         <span class="job-title">${escapeHtml(job.title || job.kind || job.id)}</span>
-        <span class="job-status">${escapeHtml(statusText(job.status))}</span>
+        <span class="job-status">${escapeHtml(job.cancel_requested && ["queued", "running"].includes(job.status) ? "canceling" : statusText(job.status))}</span>
       </span>
       <span class="job-meta">${escapeHtml(jobSubline(job))}</span>
       ${["queued", "running"].includes(job.status) ? renderProgress(job) : ""}
@@ -1994,7 +2122,7 @@ async function renderSelected() {
   details.classList.remove("empty");
   $("#selectedTitle").textContent = job.title || job.kind || job.id;
   $("#selectedMeta").textContent = jobSubline(job);
-  cancelButton.hidden = !["queued", "running"].includes(job.status);
+  cancelButton.hidden = !["queued", "running"].includes(job.status) || Boolean(job.cancel_requested);
   const isLive = ["queued", "running"].includes(job.status);
   logEl.hidden = false;
   const shouldScroll = state.autoScroll || isNearBottom(logEl);
@@ -2043,6 +2171,7 @@ async function renderArtifacts() {
 
 function monitorPhase(job, logText, liveSummary) {
   if (!["queued", "running"].includes(job.status)) return statusText(job.status);
+  if (job.cancel_requested) return "Canceling";
   if (job.kind === "cryosparc_otf") {
     const phases = { waiting_for_motion_correction: "Waiting for motion correction", processing: "Processing new micrographs", draining: "Finishing available micrographs", completed: "Complete", failed: "Failed", stopped: "Stopped" };
     return phases[liveSummary?.otf?.phase] || "Starting OTF";
@@ -2317,6 +2446,7 @@ async function launchJob(form) {
       kind === "cryosparc_predict" ||
       kind === "cryosparc_otf" ||
       kind === "cryosparc_filter_otf" ||
+      (kind === "infer" && payload.source_mode === "cryosparc") ||
       (kind === "annotation" && payload.source_mode === "cryosparc") ||
       (kind === "train" && payload.mic_source_mode === "cryosparc")
     ) &&
@@ -2421,6 +2551,21 @@ function bindControls() {
     if (job) renderLiveSummary(job);
   });
   $("#annotationSourceMode")?.addEventListener("change", updateAnnotationSourceFields);
+  $("#annotationCryosparcMicrographs")?.addEventListener("change", () => {
+    resetAnnotationCryosparcOutputs();
+    const form = $("#annotationForm");
+    if (form && form.elements.source_mode?.value === "cryosparc" && hasCryosparcConnection()) {
+      loadAnnotationCryosparcOutputs(form).catch(() => {});
+    }
+  });
+  $("#annotationForm input[name='cryosparc_project']")?.addEventListener("change", () => {
+    resetAnnotationCryosparcOutputs();
+  });
+  $("#annotationCryosparcOutput")?.addEventListener("change", (event) => {
+    const outputName = event.currentTarget.value || "";
+    if (outputName) setAnnotationLaunchStatus(`Selected output: ${outputName}.`, "ok");
+  });
+  $("#inferenceSourceMode")?.addEventListener("change", updateInferenceSourceFields);
   $("#trainMicrographSourceMode")?.addEventListener("change", updateTrainingMicrographSourceFields);
   $("#annotationRefreshSessions")?.addEventListener("click", () => loadAnnotationSessions());
   $("#annotationResumeSession")?.addEventListener("click", () => resumeAnnotationSession());
@@ -2494,8 +2639,14 @@ function bindControls() {
   });
   $("#cancelButton").addEventListener("click", async () => {
     if (!state.selected) return;
-    await api(`/api/jobs/${state.selected}/cancel`, { method: "POST", body: "{}" });
-    await renderSelected();
+    const button = $("#cancelButton");
+    button.disabled = true;
+    try {
+      await api(`/api/jobs/${state.selected}/cancel`, { method: "POST", body: "{}" });
+      await loadJobs();
+    } finally {
+      button.disabled = false;
+    }
   });
 }
 
@@ -2505,6 +2656,7 @@ async function boot() {
   bindControls();
   hasCryosparcConnection();
   setCryosparcStatus("Ready to connect.");
+  updateInferenceSourceFields();
   updateAnnotationSourceFields();
   updateTrainingMicrographSourceFields();
   syncAnnotationActionControls();

@@ -582,6 +582,7 @@ def test_preview_publishes_png_to_event_log_even_if_tile_update_fails(tmp_path):
     output = tmp_path / "OTF_images"
     output.mkdir()
     uploads = []
+    output_images = []
     def tile(path):
         assert Path(path).suffix == ".png"
         assert Path(path).parent == output / ".cryosparc"
@@ -594,11 +595,15 @@ def test_preview_publishes_png_to_event_log_even_if_tile_update_fails(tmp_path):
         uploads.append((text, formats))
         assert "cryofilter_otf_gallery" in flags
         return "image-event-1"
-    external = SimpleNamespace(project_uid="P1", uid="J8", set_tile_image=tile, log_plot=log_plot,
+    def set_output_image(name, path):
+        output_images.append((name, Path(path)))
+    external = SimpleNamespace(project_uid="P1", uid="J8", set_tile_image=tile,
+        set_output_image=set_output_image, log_plot=log_plot,
         log_checkpoint=lambda **k: "checkpoint-1", log=lambda *a, **k: "progress-1",
         cs=SimpleNamespace(api=SimpleNamespace(jobs=SimpleNamespace(get_event_logs=lambda *a: []))))
-    assert otf._publish_previews(rows, output, external)["image_event_id"] == "image-event-1"
+    assert otf._publish_previews(rows, output, external, output_name="micrographs")["image_event_id"] == "image-event-1"
     assert len(uploads) == 1
+    assert output_images == [("micrographs", output / ".cryosparc/latest_micrographs.png")]
     assert "latest 2 micrographs (newest first)" in uploads[0][0]
     assert uploads[0][1] == ["png"]
 
@@ -762,7 +767,8 @@ def test_supervisor_latest_ten_galleries_and_slow_upload_backpressure(tmp_path, 
         assert index.get_meta("status")["phase"] == "completed"
         assert index.get_meta("preview_uids") == [str(uid) for uid in range(3, 13)]
         assert all(len(snapshot) <= 10 for snapshot in published)
-        assert published[0] == [("1", False)]
+        assert published[0] == [("3", True)]
+        assert all(typed for snapshot in published for _, typed in snapshot)
         assert published[-1] == [(str(uid), True) for uid in range(12, 2, -1)]
         if deferred:
             assert len(published) == 2  # Coalesce updates while the upload is slow.

@@ -86,7 +86,7 @@ def _preview(entry, inference, typing, output, *, max_display_dim=1400, white_ba
         output = output / ".cryosparc"
         output.mkdir(exist_ok=True)
     suffix = "" if max_display_dim == 1400 else f"_{max_display_dim}px"
-    path = output / (entry["key"] + ("_typed" if typing else "") + "_area_v1" + suffix + "_particle_overlay.png")
+    path = output / (entry["key"] + ("_typed" if typing else "") + "_area_v2" + suffix + "_particle_overlay.png")
     if path.exists():
         return path
     import numpy as np
@@ -105,6 +105,7 @@ def _preview(entry, inference, typing, output, *, max_display_dim=1400, white_ba
     render_particle_overlay_png(image=image, mask=mask, coords_xy=np.empty((0, 2)), keep=np.empty(0, dtype=bool),
         output_path=temporary, probability_map=prob, typed_mask=typed, label=Path(entry["path"]).name,
         include_raw_panel=True, include_probability_panel=True, include_typed_mask_panel=bool(typing),
+        include_retained_panel=True,
         max_display_dim=max_display_dim, white_background=white_background)
     temporary.replace(path)
     return path
@@ -147,7 +148,7 @@ def _preview_gallery(rows, output, *, white_background=False):
     text_color = "black" if white_background else "white"
     draw = ImageDraw.Draw(gallery)
     font = _load_label_font(20)
-    draw.text((gap, 10), f"cryoFILTER OTF | Latest {len(rows)} micrographs | Newest first",
+    draw.text((gap, 10), f"cryoFILTER Masks | Latest {len(rows)} micrographs | Newest first",
               fill=text_color, font=font)
     y = header_height
     for rank, ((entry, _, typed), panel) in enumerate(zip(rows, panels), start=1):
@@ -165,7 +166,14 @@ def _preview_gallery(rows, output, *, white_background=False):
     return path
 
 
-def _publish_previews(rows, output, external, *, progress_message="OTF previews: follow latest for the current gallery."):
+def _publish_previews(
+    rows,
+    output,
+    external,
+    *,
+    progress_message="OTF previews: follow latest for the current gallery.",
+    output_name=None,
+):
     """Render and upload off the supervisor/GPU path, using the public v5 API."""
     if not rows:
         return
@@ -176,6 +184,12 @@ def _publish_previews(rows, output, external, *, progress_message="OTF previews:
         print(f"OTF card preview unavailable: {type(exc).__name__}: {exc}", flush=True)
     _preview_gallery(rows, output)
     gallery = _preview_gallery(rows, output, white_background=True)
+    set_output_image = getattr(external, "set_output_image", None)
+    if output_name and callable(set_output_image):
+        try:
+            set_output_image(str(output_name), str(gallery))
+        except Exception as exc:
+            print(f"CryoSPARC output preview unavailable: {type(exc).__name__}: {exc}", flush=True)
     from .otf_preview_log import publish_gallery
     return publish_gallery(external, gallery, rows, progress_message)
 
@@ -444,9 +458,12 @@ def supervise(source, index, pool, external, args, run_dir, previews=None, previ
             preview_future = None
         if previews is not None and preview_pending and preview_future is None and now >= next_preview:
             snapshot = _recent_preview_rows(records, preview_uids)
-            preview_future = previews.submit(_publish_previews, snapshot, preview_dir, external, progress_message=message)
-            preview_pending = False
-            next_preview = now + 15
+            if args.run_typing:
+                snapshot = [row for row in snapshot if row[2] is not None]
+            if snapshot:
+                preview_future = previews.submit(_publish_previews, snapshot, preview_dir, external, progress_message=message)
+                preview_pending = False
+                next_preview = now + 15
         if terminal and drained and not waiting and failures == 0:
             if source.status != "completed":
                 raise RuntimeError(f"Motion correction {source.status}; completed masks remain available for filtering/resume")
@@ -464,6 +481,8 @@ def supervise(source, index, pool, external, args, run_dir, previews=None, previ
                             preview_pending = True
                     try:
                         snapshot = _recent_preview_rows(records, preview_uids)
+                        if args.run_typing:
+                            snapshot = [row for row in snapshot if row[2] is not None]
                         result = previews.submit(_publish_previews, snapshot, preview_dir, external,
                             progress_message=f"OTF complete: {n_segmented} segmented, {n_typed} typed.").result()
                         _remember_preview(index, result)

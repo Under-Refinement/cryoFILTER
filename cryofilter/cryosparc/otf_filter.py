@@ -1,4 +1,4 @@
-"""CPU-only, vectorized particle filtering using the OTF card's UID index."""
+"""CPU-only particle filtering using an Inference or OTF card's UID index."""
 from __future__ import annotations
 
 import math
@@ -104,7 +104,7 @@ def filter_by_index(particles, rows, *, exclusion_angstrom=100.0, missing_masks=
     if missing_uids and missing_masks == "error":
         raise ValueError(f"Masks are missing, unfinished or changed for {len(missing_uids)} micrograph(s) "
                          f"({int(np.count_nonzero(decisions == 2))} particles). Example UIDs: {', '.join(missing_uids[:5])}. "
-                         "Wait for OTF, or choose pending to publish unprocessed particles separately.")
+                         "Wait for the cryoFILTER mask job, or choose pending to publish unprocessed particles separately.")
     return decisions, {"particles": len(uids), "accepted": int(np.count_nonzero(decisions == 0)),
                        "rejected": int(np.count_nonzero(decisions == 1)), "pending": int(np.count_nonzero(decisions == 2)),
                        "missing_micrograph_uids": missing_uids, "per_micrograph": counts}
@@ -132,12 +132,13 @@ def run_filter(args, config):
         index.close()
     particle_job = find_job(client, project, project_uid, ref.job_uid)
     if str(particle_job.status) != "completed":
-        raise ValueError("Choose a completed particle-picking job; the OTF mask job may still be running")
+        raise ValueError("Choose a completed particle-picking job; the cryoFILTER mask job may still be running")
     particles, ref = _load_output_with_aliases(particle_job, ref, kind="particles")
     started = time.monotonic()
     decisions, summary = filter_by_index(particles, rows,
         exclusion_angstrom=args.particle_exclusion_distance_angstrom, missing_masks=args.missing_masks)
-    summary.update(elapsed_seconds=time.monotonic() - started, otf_job=otf_uid, project=project_uid,
+    summary.update(elapsed_seconds=time.monotonic() - started, otf_job=otf_uid, mask_job=otf_uid,
+                   project=project_uid,
                    particle_job=ref.job_uid, exclusion_distance_angstrom=args.particle_exclusion_distance_angstrom,
                    index_path=str(path), masks_snapshot_time=time.time())
     output.mkdir(parents=True, exist_ok=False)

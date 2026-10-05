@@ -19,7 +19,7 @@ def publish_gallery(external, gallery, rows, progress):
     """
     recipe = [(entry["key"], inference.get("output_stamps"), bool(typed),
                typed.get("output_stamp") if typed else None) for entry, inference, typed in rows[:10]]
-    signature = hashlib.sha256(json.dumps(["white_area_v1", recipe], sort_keys=True).encode()).hexdigest()
+    signature = hashlib.sha256(json.dumps(["white_area_v2", recipe], sort_keys=True).encode()).hexdigest()
     context = {"project": external.project_uid, "job": external.uid, "signature": signature}
     state_path = gallery.parent / "event_log.json"
     try:
@@ -46,7 +46,10 @@ def publish_gallery(external, gallery, rows, progress):
                 for event in events[pos + 1:]:
                     if getattr(event, "type", None) == "image" and MARKER in event.flags:
                         state["image_event_id"] = str(event.id)
-                    elif getattr(event, "type", None) == "text" and event.text.startswith("OTF "):
+                    elif (
+                        getattr(event, "type", None) == "text"
+                        and event.text.startswith(("OTF ", "Inference "))
+                    ):
                         state["progress_event_id"] = str(event.id)
     write_json(state_path, state)
     if not state.get("checkpoint_id"):
@@ -59,8 +62,8 @@ def publish_gallery(external, gallery, rows, progress):
     if not state.get("image_event_id"):
         state["image_event_id"] = str(external.log_plot(
             figure=str(gallery), formats=["png"], flags=["plots", MARKER],
-            text=f"cryoFILTER OTF: latest {min(len(rows), 10)} micrographs (newest first). "
-                 "Raw image, contamination mask, typing when available, and probability. "
+            text=f"cryoFILTER masks: latest {min(len(rows), 10)} micrographs (newest first). "
+                 "Raw image, contamination mask, typing when available, probability, and retained regions. "
                  "Follow latest shows the current gallery; earlier checkpoints retain history.",
         ))
         write_json(state_path, state)

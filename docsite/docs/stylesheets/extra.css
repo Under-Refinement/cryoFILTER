@@ -1,0 +1,312 @@
+/*
+ * Approved Phase 2 theme. Source baseline: app commit 081007c.
+ * App references below are cryofilter/app/static/styles.css unless qualified.
+ * THEME_PROPOSAL.md records derivations and contrast targets; BRANDING.md records
+ * font licensing and logo provenance. Scientific screenshots are not recolored.
+ */
+
+@font-face {
+  font-family: "IBM Plex Sans";
+  src: url("../assets/fonts/IBMPlexSans-Regular.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+@font-face {
+  font-family: "IBM Plex Sans";
+  src: url("../assets/fonts/IBMPlexSans-Medium.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+}
+@font-face {
+  font-family: "IBM Plex Sans";
+  src: url("../assets/fonts/IBMPlexSans-SemiBold.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+}
+@font-face {
+  font-family: "IBM Plex Sans";
+  src: url("../assets/fonts/IBMPlexSans-Bold.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+}
+@font-face {
+  font-family: "IBM Plex Sans";
+  src: url("../assets/fonts/IBMPlexSans-Italic.woff2") format("woff2");
+  font-style: italic;
+  font-weight: 400;
+  font-display: swap;
+}
+@font-face {
+  font-family: "IBM Plex Mono";
+  src: url("../assets/fonts/IBMPlexMono-Regular.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+@font-face {
+  font-family: "IBM Plex Mono";
+  src: url("../assets/fonts/IBMPlexMono-Medium.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+}
+@font-face {
+  font-family: "IBM Plex Mono";
+  src: url("../assets/fonts/IBMPlexMono-Bold.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+}
+
+:root {
+  /* App prose stack :33 and brand/code stack :81; retain Material fallbacks. */
+  --md-text-font: "IBM Plex Sans";
+  --md-code-font: "IBM Plex Mono";
+  --cf-radius: 8px; /* App --radius :22. */
+}
+
+[data-md-color-scheme="cryofilter-dark"] {
+  color-scheme: dark;
+  --cf-page: #0a0f14;       /* App --bg-0 :3. */
+  --cf-header: #0c131a;     /* App --bg-1 :4. */
+  --cf-panel: #101922;      /* App --bg-2 :5. */
+  --cf-raised: #16222c;     /* App --bg-3 :6. */
+  --cf-code: #070c10;       /* App --bg-well :7. */
+  --cf-line: #1b2833;       /* App --line :8, decorative only. */
+  --cf-line-strong: #2a3b49; /* App --line-2 :9, decorative only. */
+  --cf-text: #e6eef4;       /* App --fg :10. */
+  --cf-muted: #8da0ae;      /* App --fg-2 :11. */
+  --cf-control: #61798a;    /* App --fg-3 :12, essential control boundaries. */
+  --cf-accent: #4fb8d8;     /* App --accent :14. */
+  --cf-on-accent: #04222b;  /* App --on-accent :16. */
+  --cf-magenta: #e56faa;    /* App --mask :17, HSL lightness +12 x 0.005. */
+  --cf-success: #3fbf9b;    /* App --ok :18. */
+  --cf-warning: #d9a441;    /* App --warn :19. */
+  --cf-error: #e57676;      /* App --err :20, HSL lightness +13 x 0.005. */
+}
+
+[data-md-color-scheme="cryofilter-light"] {
+  color-scheme: light;
+  --cf-page: #f5f8fb;       /* App --fg :10 mixed with 60% white. */
+  --cf-header: #ffffff;    /* White outline in cryofilter/qc_render.py:12. */
+  --cf-panel: #ffffff;     /* Same white, reused as a light surface. */
+  --cf-raised: #e6eef4;     /* App --fg :10 reassigned as a surface. */
+  --cf-code: #e6eef4;       /* App --fg :10 reassigned as a code well. */
+  --cf-line: #dce0e3;      /* App --fg-4 :13 mixed with 80% white. */
+  --cf-line-strong: #dce0e3; /* Same derived decorative separator. */
+  --cf-text: #16222c;       /* App --bg-3 :6 reassigned as text. */
+  --cf-muted: #4e6273;      /* App --fg-4 :13. */
+  --cf-control: #61798a;    /* App --fg-3 :12, essential control boundaries. */
+  --cf-accent: #1c667d;     /* App --accent :14, HSL lightness -56 x 0.005. */
+  --cf-on-accent: #ffffff;  /* White text on the darkened accent. */
+  --cf-magenta: #af2068;    /* App --mask :17, HSL lightness -40 x 0.005. */
+  --cf-success: #236955;    /* App --ok :18, HSL lightness -45 x 0.005. */
+  --cf-warning: #7a5818;    /* App --warn :19, HSL lightness -53 x 0.005. */
+  --cf-error: #b52222;      /* App --err :20, HSL lightness -39 x 0.005. */
+}
+
+/* Map Material roles once; transparent variants use the same approved tokens. */
+[data-md-color-scheme^="cryofilter-"] {
+  --md-default-bg-color: var(--cf-page);
+  --md-default-bg-color--light: color-mix(in srgb, var(--cf-page) 70%, transparent);
+  --md-default-bg-color--lighter: color-mix(in srgb, var(--cf-page) 30%, transparent);
+  --md-default-bg-color--lightest: color-mix(in srgb, var(--cf-page) 12%, transparent);
+  --md-default-fg-color: var(--cf-text);
+  --md-default-fg-color--light: var(--cf-muted);
+  --md-default-fg-color--lighter: var(--cf-muted);
+  --md-default-fg-color--lightest: var(--cf-line);
+  --md-typeset-color: var(--cf-text);
+  --md-typeset-a-color: var(--cf-accent);
+  --md-primary-fg-color: var(--cf-accent);
+  --md-primary-fg-color--light: var(--cf-accent);
+  --md-primary-fg-color--dark: var(--cf-accent);
+  --md-primary-bg-color: var(--cf-on-accent);
+  --md-primary-bg-color--light: var(--cf-on-accent);
+  --md-accent-fg-color: var(--cf-accent);
+  --md-accent-fg-color--transparent: color-mix(in srgb, var(--cf-accent) 10%, transparent);
+  --md-accent-bg-color: var(--cf-on-accent);
+  --md-accent-bg-color--light: var(--cf-on-accent);
+  --md-code-bg-color: var(--cf-code);
+  --md-code-bg-color--light: color-mix(in srgb, var(--cf-code) 70%, transparent);
+  --md-code-bg-color--lighter: color-mix(in srgb, var(--cf-code) 30%, transparent);
+  --md-code-fg-color: var(--cf-text);
+  --md-code-hl-color: var(--cf-accent);
+  --md-code-hl-color--light: var(--md-accent-fg-color--transparent);
+  --md-code-hl-number-color: var(--cf-magenta);
+  --md-code-hl-special-color: var(--cf-magenta);
+  --md-code-hl-function-color: var(--cf-accent);
+  --md-code-hl-constant-color: var(--cf-magenta);
+  --md-code-hl-keyword-color: var(--cf-accent);
+  --md-code-hl-string-color: var(--cf-success);
+  --md-code-hl-name-color: var(--cf-text);
+  --md-code-hl-operator-color: var(--cf-muted);
+  --md-code-hl-punctuation-color: var(--cf-muted);
+  --md-code-hl-comment-color: var(--cf-muted);
+  --md-code-hl-generic-color: var(--cf-muted);
+  --md-code-hl-variable-color: var(--cf-muted);
+  --md-typeset-kbd-color: var(--cf-panel);
+  --md-typeset-kbd-accent-color: var(--cf-raised);
+  --md-typeset-kbd-border-color: var(--cf-control);
+  --md-typeset-mark-color: color-mix(in srgb, var(--cf-warning) 20%, transparent);
+  --md-typeset-ins-color: color-mix(in srgb, var(--cf-success) 10%, transparent);
+  --md-typeset-del-color: color-mix(in srgb, var(--cf-error) 10%, transparent);
+  --md-typeset-table-color: var(--cf-line-strong);
+  --md-typeset-table-color--light: var(--cf-panel);
+  --md-admonition-fg-color: var(--cf-text);
+  --md-admonition-bg-color: var(--cf-panel);
+  --md-warning-fg-color: var(--cf-text);
+  --md-warning-bg-color: var(--cf-panel);
+  --md-footer-fg-color: var(--cf-text);
+  --md-footer-fg-color--light: var(--cf-muted);
+  --md-footer-fg-color--lighter: var(--cf-muted);
+  --md-footer-bg-color: var(--cf-header);
+  --md-footer-bg-color--dark: var(--cf-header);
+  --md-shadow-z1: none;
+  --md-shadow-z2: 0 0 0 1px var(--cf-line-strong);
+  /* App dialog shadow :691, reserved for floating search results. */
+  --md-shadow-z3: 0 24px 70px rgba(0, 0, 0, 0.45);
+}
+
+/* Neutral app chrome; keep the Material primary role for readable links. */
+.md-header,
+.md-tabs,
+.md-nav--primary .md-nav__title[for="__drawer"] {
+  background-color: var(--cf-header);
+  color: var(--cf-text);
+}
+.md-header--shadow,
+.md-tabs {
+  box-shadow: 0 1px 0 var(--cf-line);
+}
+.md-header__title,
+.md-header__topic:first-child,
+.md-typeset :is(h1, h2, h3) {
+  color: var(--cf-text);
+  font-weight: 500; /* App headings :93-106, at Material's readable prose scale. */
+}
+.md-typeset {
+  line-height: 1.6;
+}
+.md-header__button.md-logo img,
+.md-nav__button.md-logo img {
+  height: 1.5rem;
+  width: 1.5rem;
+}
+.md-tabs__link {
+  opacity: 1;
+}
+.md-tabs__item--active .md-tabs__link {
+  color: var(--cf-accent);
+}
+.md-header .md-search__form,
+.md-header .md-search__form:hover {
+  background-color: var(--cf-raised);
+  color: var(--cf-text);
+  box-shadow: inset 0 0 0 1px var(--cf-control);
+}
+.md-header .md-search__input::placeholder,
+.md-header .md-search__input + .md-search__icon {
+  color: var(--cf-muted);
+}
+.md-header__source,
+.md-header__button:hover,
+.md-search__icon:hover,
+[data-md-toggle="search"]:checked ~ .md-header .md-search__options > .md-icon:hover {
+  opacity: 1;
+}
+
+/* Prose links stay identifiable without color. Control labels retain their UI. */
+.md-typeset a:not(.md-button, .headerlink, .glightbox) {
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
+}
+.md-typeset .tabbed-labels a {
+  text-decoration: none;
+}
+.md-typeset :is(.md-code__button, .md-clipboard) {
+  color: var(--cf-muted);
+}
+.md-typeset :is(.md-code__button, .md-clipboard):is(:hover, :focus-visible) {
+  color: var(--cf-accent);
+}
+.md-typeset .md-button,
+.md-typeset pre > code {
+  border-radius: var(--cf-radius);
+}
+.md-typeset .md-button {
+  border-width: 1px;
+  font-weight: 500;
+}
+.md-typeset .md-button:hover,
+.md-typeset .md-button:focus-visible {
+  text-decoration: underline;
+}
+.md-typeset .admonition,
+.md-typeset .admonition[class],
+.md-typeset details,
+.md-typeset details[class] {
+  --cf-status: var(--cf-accent);
+  border: 1px solid var(--cf-status);
+  border-radius: var(--cf-radius);
+  box-shadow: none;
+}
+.md-typeset :is(.admonition, details):is(.tip, .success) {
+  --cf-status: var(--cf-success);
+}
+.md-typeset :is(.admonition, details):is(.warning, .question) {
+  --cf-status: var(--cf-warning);
+}
+.md-typeset :is(.admonition, details):is(.failure, .danger, .bug) {
+  --cf-status: var(--cf-error);
+}
+.md-typeset :is(.admonition, details).quote {
+  --cf-status: var(--cf-muted);
+}
+.md-typeset :is(.admonition, details) > :is(.admonition-title, summary) {
+  background-color: color-mix(in srgb, var(--cf-status) 10%, var(--cf-panel));
+  border-start-start-radius: calc(var(--cf-radius) - 1px);
+  border-start-end-radius: calc(var(--cf-radius) - 1px);
+  color: var(--cf-text);
+}
+.md-typeset details:not([open]) > summary {
+  border-radius: calc(var(--cf-radius) - 1px);
+}
+.md-typeset :is(.admonition, details) > :is(.admonition-title, summary)::before {
+  background-color: var(--cf-status);
+}
+.md-typeset :is(.admonition, details) > :is(.admonition-title, summary)::after {
+  color: var(--cf-status);
+}
+
+/* App :45-47. Specificity also covers Material's outline reset on controls. */
+body :is(a, button, input, label, summary, [tabindex]):focus-visible,
+body .focus-visible {
+  outline: 2px solid var(--cf-accent);
+  outline-offset: 2px;
+}
+/* Palette and content tabs put focus on a hidden radio; outline its label. */
+body .md-option:focus-visible + label,
+.md-typeset .tabbed-labels > label:has(a:focus-visible) {
+  outline: 2px solid var(--cf-accent);
+  outline-offset: -2px;
+}
+.md-search__form:has(.md-search__input:focus-visible) {
+  outline: 2px solid var(--cf-accent);
+  outline-offset: 2px;
+}
+
+/* App reduced-motion intent :1164, extended to documentation UI transitions. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
+}

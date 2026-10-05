@@ -945,6 +945,9 @@ def test_write_typing_manifest_from_transfer_allows_live_partial_masks(tmp_path:
             dataset_id="P1_W2",
         )
 
+    # Even if an old/stale output exists, a live caller can restrict the
+    # manifest to stems confirmed complete by the current inference run.
+    np.save(inference / "waiting_mask.npy", np.zeros((4, 4), dtype=np.uint8))
     output_csv = tmp_path / "partial.csv"
     info = predict_helpers.write_typing_manifest_from_transfer(
         transfer_manifest_file=manifest_path,
@@ -953,6 +956,7 @@ def test_write_typing_manifest_from_transfer_allows_live_partial_masks(tmp_path:
         manifest_path=output_csv,
         dataset_id="P1_W2",
         require_all_masks=False,
+        include_stems=["ready"],
     )
 
     assert info["images"] == 1
@@ -1351,7 +1355,7 @@ def test_refresh_typed_particle_overlays_writes_four_panel_png(tmp_path: Path) -
 
     assert refreshed["refreshed"] == 1
     frame = Image.open(overlay_path)
-    assert frame.size == (64 * 4 + 16 * 3, 48)
+    assert frame.size == (64 * 5 + 16 * 4, 48)
     summary = json.loads((inference_dir / "inference_summary.json").read_text(encoding="utf-8"))
     assert summary["particle_overlay_rendering"]["typed_mask_panel"] is True
 
@@ -1383,7 +1387,7 @@ def test_refresh_typed_particle_overlays_writes_four_panel_png(tmp_path: Path) -
     assert overlay_path.stat().st_mtime_ns != stamp
 
 
-def test_refresh_typed_particle_overlays_creates_four_panel_otf_when_inference_deferred(
+def test_refresh_typed_particle_overlays_creates_five_panel_otf_when_inference_deferred(
     tmp_path: Path,
 ) -> None:
     import mrcfile
@@ -1479,7 +1483,7 @@ def test_refresh_typed_particle_overlays_creates_four_panel_otf_when_inference_d
     assert refreshed["refreshed"] == 1
     output_path = inference_dir / "OTF_images" / "mic_002_particle_overlay.png"
     frame = Image.open(output_path)
-    assert frame.size == (64 * 4 + 16 * 3, 48)
+    assert frame.size == (64 * 5 + 16 * 4, 48)
     summary = json.loads((inference_dir / "inference_summary.json").read_text(encoding="utf-8"))
     overlay = summary["particle_overlay_rendering"]
     assert overlay["typed_mask_panel"] is True
@@ -1488,7 +1492,7 @@ def test_refresh_typed_particle_overlays_creates_four_panel_otf_when_inference_d
 
 
 def test_required_typed_particle_overlay_refresh_fails_loudly() -> None:
-    with pytest.raises(RuntimeError, match="4-panel typed OTF"):
+    with pytest.raises(RuntimeError, match="5-panel typed OTF"):
         remote_cli._require_typed_particle_overlay_refresh(
             {"enabled": True, "refreshed": 0, "reason": "no typed masks found"},
             run_typing=True,

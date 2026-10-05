@@ -1,0 +1,29 @@
+# Keep this directory self-contained when it moves to another checkout.
+/.venv/
+/.cache/
+/.tmp/
+/.preview/
+/.browser-env/
+/site/
+__pycache__/
+*.py[cod]
+
+# Never include credentials, raw data, or model weights in the tutorial site.
+.env
+.env.*
+.ssh/
+ssh_config
+cryosparc.toml
+*.pem
+*.key
+pretrained_models/
+*.pt
+*.pth
+*.safetensors
+*.mrc
+*.mrcs
+*.npy
+*.npz
+*.cs
+*.csg
+*.star

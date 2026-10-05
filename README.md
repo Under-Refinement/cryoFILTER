@@ -132,11 +132,11 @@ cryofilter app
 
 The CryoSPARC form exposes **CPUs**, **Typing workers**, and **Typing updates**. Live background typing reuses per-image features while inference continues; Final only starts typing after inference. An explicit CPU budget is shared between inference and live typing, and a one-CPU budget uses final-only typing. The monitor reports completed inference images and typed images separately, with finalization and upload shown as distinct phases.
 
-**Mask generation:** Use Inference with micrographs, weights, and an output directory. Particles are optional, so this can generate masks only.
+**Mask generation:** Use Inference with a local micrograph path or a completed CryoSPARC micrograph output, weights, and an output directory. A CryoSPARC particle output is optional, so this can generate masks only. CryoSPARC-backed inference creates a live External Job by default, updates its progress and mask previews, and finishes with a connectable `micrographs` output plus a reusable mask index. Its default **Run typing** option publishes only typed five-panel previews (raw, mask, subtype, probability, and retained regions). With at least two requested GPUs, segmentation and incremental typing receive dedicated devices just like OTF; one-GPU runs type after segmentation.
 
-**Particle filtering:** Use Filter Picks when masks already exist and you want to filter new or re-exported particle picks without rerunning inference.
+**Particle filtering:** Use Filter Picks when masks already exist and you want to filter new particle picks without rerunning inference. An Inference or OTF card plus a completed CryoSPARC particle job produces a new External Job with connectable accepted/rejected particle outputs; local mask and particle files remain supported.
 
-**OTF with motion correction:** On a machine with direct access to the CryoSPARC project, use **OTF** to follow a queued/running CryoSPARC 5 Patch Motion Correction job. One allocated GPU runs segmentation; two or more can run segmentation alone or split between segmentation and typing. In **Filter Picks**, select **CryoSPARC OTF job** and enter the OTF card number to locate its masks automatically. See the [OTF workflow and test guide](docs/cryosparc/OTF.md).
+**OTF with motion correction:** On a machine with direct access to the CryoSPARC project, use **OTF** to follow a queued/running CryoSPARC 5 Patch Motion Correction job. One allocated GPU runs segmentation; two or more can run segmentation alone or split between segmentation and typing. In **Filter Picks**, select **CryoSPARC mask job** and enter the OTF card number to locate its masks automatically. See the [OTF workflow and test guide](docs/cryosparc/OTF.md).
 
 **Annotation:** Use Annotation with a local micrograph path, a CryoSPARC micrograph output, or a previous `manifest_edited.csv`. Sessions can be saved and resumed in the browser.
 

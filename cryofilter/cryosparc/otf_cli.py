@@ -1,4 +1,7 @@
-"""OTF command arguments; keep CLI discovery free of bridge/GPU imports."""
+"""Mask-card command arguments; keep CLI discovery free of bridge/GPU imports."""
+
+import argparse
+
 
 def add_parsers(sub):
     parser = sub.add_parser("otf", help="Follow a running Patch Motion Correction job on a shared filesystem.")
@@ -21,12 +24,42 @@ def add_parsers(sub):
     parser.add_argument("--resume-job", help="Resume an existing OTF card in this project (same source/settings).")
     parser.add_argument("--title", default="cryoFILTER-OTFwMC")
     parser.add_argument("--no-previews", action="store_true")
-    filtering = sub.add_parser("filter-otf", help="Filter a CryoSPARC particle job using masks from an OTF card.")
+    filtering = sub.add_parser(
+        "filter-otf",
+        help="Filter a CryoSPARC particle job using masks from an Inference or OTF card.",
+    )
     filtering.add_argument("--project", required=True)
     filtering.add_argument("--workspace", required=True)
-    filtering.add_argument("--otf-job", required=True)
+    filtering.add_argument("--otf-job", required=True, help="Inference or OTF cryoFILTER job UID.")
     filtering.add_argument("--particles", required=True)
     filtering.add_argument("--particle-exclusion-distance-angstrom", type=float, default=100)
     filtering.add_argument("--missing-masks", choices=("error", "pending"), default="error")
     filtering.add_argument("--output-dir", required=True)
     filtering.add_argument("--title", default="cryoFILTER filtered picks")
+
+    inference_card = sub.add_parser(
+        "inference-card",
+        help="Run batch inference while publishing a reusable CryoSPARC mask card.",
+    )
+    inference_card.add_argument("--project", required=True)
+    inference_card.add_argument("--workspace", required=True)
+    inference_card.add_argument("--local-run-dir", required=True)
+    inference_card.add_argument("--output-dir", required=True)
+    inference_card.add_argument("--poll-seconds", type=float, default=2.0)
+    inference_card.add_argument(
+        "--run-typing",
+        action="store_true",
+        help="Run publication contamination typing after segmentation.",
+    )
+    inference_card.add_argument("--typing-workers", type=int)
+    inference_card.add_argument(
+        "--typing-sample-stride-px",
+        type=int,
+        choices=(16, 32, 64),
+        default=64,
+    )
+    inference_card.add_argument(
+        "infer_args",
+        nargs=argparse.REMAINDER,
+        help="Arguments after -- are forwarded to cryofilter infer.",
+    )

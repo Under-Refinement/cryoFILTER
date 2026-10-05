@@ -1,0 +1,101 @@
+site_name: cryoFILTER
+site_description: Contamination segmentation and particle filtering for single-particle cryo-EM
+repo_url: https://github.com/Under-Refinement/cryoFILTER
+repo_name: cryoFILTER
+edit_uri: ""
+# site_url stays unset until publication is explicitly approved.
+docs_dir: docs
+site_dir: site
+
+theme:
+  name: material
+  custom_dir: overrides
+  language: en
+  # IBM Plex is bundled locally; do not request fonts from Google.
+  font: false
+  logo: assets/logo.svg
+  favicon: assets/favicon.png
+  # First visit defaults to dark; Material remembers the reader's selection.
+  palette:
+    - scheme: cryofilter-dark
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/weather-night
+        name: Switch to light mode
+    - scheme: cryofilter-light
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to dark mode
+  features:
+    - navigation.sections
+    - navigation.tabs
+    - navigation.top
+    - navigation.instant
+    - toc.follow
+    - content.code.copy
+    - content.tabs.link
+    - search.suggest
+    - search.highlight
+
+nav:
+  - Home: index.md
+  - Get started:
+      - Install: get-started/install.md
+      - Download weights: get-started/weights.md
+      - Launch the app: get-started/launch.md
+      - Remote servers & SSH tunnel: get-started/remote.md
+      - Troubleshooting: get-started/troubleshooting.md
+  - Tutorial:
+      - Demo walkthrough: demo.md
+      - Overview & prerequisites: tutorial/index.md
+      - Core walkthrough:
+          - 1. Get the tutorial data: tutorial/data.md
+          - 2. Your first inference run: tutorial/inference.md
+          - 3. Read the results: tutorial/results.md
+          - 4. Prepare particle picks: tutorial/particle-picking.md
+          - 5. Filter particle picks: tutorial/filter-picks.md
+      - CryoSPARC workflows:
+          - Connect to CryoSPARC: tutorial/cryosparc.md
+          - On-the-fly with motion correction: tutorial/otf.md
+      - Adapt the model:
+          - Annotate micrographs: tutorial/annotation.md
+          - Fine-tune and compare results: tutorial/fine-tuning.md
+  - Reference:
+      - CLI reference: reference/cli.md
+      - Expert notes: reference/expert-notes.md
+      - App behavior: reference/app.md
+      - Classifier & weight lookup: reference/classifier.md
+      - CryoSPARC remote integration: reference/cryosparc-remote.md
+      - OTF technical guide: reference/otf.md
+      - Fine-tuning protocol: reference/fine-tuning.md
+  - About: about.md
+
+extra_css:
+  - stylesheets/extra.css
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - footnotes
+  - tables
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets:
+      check_paths: true
+  - pymdownx.keys
+  - toc:
+      permalink: true
+
+plugins:
+  - search
+  - glightbox
+# The revision-date plugin is pinned but awaits pages with committed history.

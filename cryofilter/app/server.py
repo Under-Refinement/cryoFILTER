@@ -10,6 +10,7 @@ import json
 import mimetypes
 import os
 import platform
+import re
 import shlex
 import signal
 import socket
@@ -387,6 +388,19 @@ def _normalize_output_ref(value: str, *, default_output_name: str) -> str:
     return text
 
 
+def _output_ref_with_selection(
+    value: str,
+    selection: object,
+    *,
+    default_output_name: str,
+) -> str:
+    selected = _optional_str(selection)
+    if selected:
+        job_uid = str(value).strip().split(":", 1)[0]
+        return f"{job_uid}:{selected}"
+    return _normalize_output_ref(value, default_output_name=default_output_name)
+
+
 def _as_bool(value: object, *, default: bool = False) -> bool:
     if value is None:
         return default
@@ -503,6 +517,66 @@ def validate_cryosparc_connection(
         "display": display,
         "email": email,
         "server_version": version,
+    }
+
+
+def discover_cryosparc_job_outputs(
+    payload: dict[str, Any],
+    *,
+    make_client: Callable[..., object] | None = None,
+) -> dict[str, Any]:
+    """Return selectable output names for a CryoSPARC source job."""
+
+    instance_url = _require_text(payload, "cryosparc_base_url")
+    host, base_port = _instance_url_host_port(instance_url)
+    if host is None:
+        raise ValueError("Enter a valid CryoSPARC instance URL.")
+
+    project_uid = _require_text(payload, "project_uid").upper()
+    job_uid = _require_text(payload, "job_uid").split(":", 1)[0].upper()
+    if not re.fullmatch(r"P\d+", project_uid):
+        raise ValueError("CryoSPARC project UID must look like P306.")
+    if not re.fullmatch(r"J\d+", job_uid):
+        raise ValueError("CryoSPARC job UID must look like J389.")
+
+    email = _optional_str(payload.get("cryosparc_email"))
+    password = _optional_str(payload.get("cryosparc_password"))
+    try:
+        if make_client is None:
+            make_client = _make_cryosparc_probe_client
+        client = make_client(
+            host=host,
+            base_port=base_port,
+            email=email,
+            password=password,
+        )
+        from cryofilter.cryosparc.bridge.compat import find_job
+        from cryofilter.cryosparc.bridge.prepare import _job_output_names
+
+        # Direct job lookup lets collaborators inspect outputs without loading
+        # the project-owner-only controller used for CryoSPARC mutations.
+        job = find_job(client, None, project_uid, job_uid)
+        outputs = _job_output_names(job)
+    except ModuleNotFoundError as exc:
+        if "cryosparc" in str(exc):
+            raise RuntimeError(
+                "cryosparc-tools is not installed in this Python environment. "
+                "Install it before discovering job outputs."
+            ) from None
+        raise
+    except Exception as exc:
+        detail = _redact_text(f"{type(exc).__name__}: {exc}", [password])
+        raise RuntimeError(
+            f"Could not inspect CryoSPARC job {project_uid}/{job_uid}: {detail}"
+        ) from None
+
+    if not outputs:
+        raise ValueError(f"CryoSPARC job {project_uid}/{job_uid} has no discoverable outputs.")
+    return {
+        "ok": True,
+        "project_uid": project_uid,
+        "job_uid": job_uid,
+        "outputs": outputs,
     }
 
 
@@ -707,7 +781,117 @@ def build_job_spec(kind: str, payload: dict[str, Any], *, work_dir: Path) -> Job
 
 
 def _build_infer_spec(payload: dict[str, Any], *, work_dir: Path) -> JobSpec:
-    input_path = _require_text(payload, "input")
+    source_mode = (_optional_str(payload.get("source_mode")) or "local").lower()
+    if source_mode in {"micrographs", "path"}:
+        source_mode = "local"
+    if source_mode not in {"local", "cryosparc"}:
+        raise ValueError("Inference source must be local or cryosparc.")
+
+    steps: list[JobStep] = []
+    artifact_roots: list[Path]
+    secret_env: dict[str, str] = {}
+    metadata: dict[str, Any] = {"source_mode": source_mode}
+    title_source: str
+    particle_file = _optional_str(payload.get("particle_file"))
+    publish_cryosparc_job = False
+    run_typing = False
+
+    if source_mode == "local":
+        input_path = _require_text(payload, "input")
+        title_source = Path(input_path).name
+        artifact_roots = []
+    else:
+        if not _optional_str(payload.get("cryosparc_base_url")):
+            raise ValueError("Connect to CryoSPARC before launching inference from a workspace output.")
+        project = _require_text(payload, "cryosparc_project")
+        workspace = _require_text(payload, "cryosparc_workspace")
+        micrographs_ref = _normalize_output_ref(
+            _require_text(payload, "cryosparc_micrographs"),
+            default_output_name="micrographs",
+        )
+        particles_text = _optional_str(payload.get("cryosparc_particles"))
+        particles_ref = (
+            _normalize_output_ref(particles_text, default_output_name="particles")
+            if particles_text is not None
+            else None
+        )
+        instance_host, instance_port = _instance_url_host_port(payload.get("cryosparc_base_url"))
+        run_id = str(uuid.uuid4())
+        stage_root = _resolve_work_path(
+            _optional_str(payload.get("local_run_root")) or "cryofilter_runs/inference_staging",
+            work_dir=work_dir,
+        )
+        stage_run_dir = stage_root / run_id
+        input_path = str(stage_run_dir / "transfer" / "micrographs")
+        particle_star = stage_run_dir / "particles_from_cryosparc.star"
+
+        stage_argv = [sys.executable, "-m", "cryofilter.cli", "cryosparc"]
+        _add_option(stage_argv, "--config", payload.get("config"))
+        _add_option(stage_argv, "--host", payload.get("bridge_host") or "local")
+        _add_option(stage_argv, "--bridge-command", payload.get("bridge_command"))
+        _add_option(stage_argv, "--remote-source-root", payload.get("remote_source_root"))
+        _add_option(stage_argv, "--remote-work-root", payload.get("remote_work_root"))
+        _add_option(stage_argv, "--cryosparc-host", payload.get("cryosparc_host") or instance_host)
+        _add_option(stage_argv, "--cryosparc-base-port", payload.get("cryosparc_base_port") or instance_port)
+        _add_option(stage_argv, "--cryosparc-email", payload.get("cryosparc_email"))
+        for option in _as_tokens(payload.get("ssh_options")):
+            stage_argv.extend(["--ssh-option", option])
+        stage_argv.extend(
+            [
+                "stage-test",
+                "--project",
+                project,
+                "--workspace",
+                workspace,
+                "--micrographs",
+                micrographs_ref,
+                "--run-id",
+                run_id,
+                "--local-run-root",
+                str(stage_root),
+                "--model-id",
+                "inference",
+                "--title",
+                "cryoFILTER inference",
+            ]
+        )
+        publish_cryosparc_job = _as_bool(
+            payload.get("publish_cryosparc_job"),
+            default=True,
+        )
+        run_typing = publish_cryosparc_job and _as_bool(
+            payload.get("run_typing"),
+            default=True,
+        )
+        if publish_cryosparc_job:
+            stage_argv.append("--create-external-job")
+        if _optional_str(payload.get("limit_micrographs")):
+            _add_option(stage_argv, "--limit-micrographs", payload.get("limit_micrographs"))
+        else:
+            stage_argv.append("--all-micrographs")
+        _add_option(stage_argv, "--max-transfer-gb", payload.get("max_transfer_gb") or "25")
+        if particles_ref is not None:
+            stage_argv.extend(["--particles", particles_ref, "--particle-star", str(particle_star)])
+            particle_file = str(particle_star)
+        steps.append(JobStep("Stage CryoSPARC inputs", stage_argv))
+
+        cryosparc_password = _optional_str(payload.get("cryosparc_password"))
+        if cryosparc_password is not None:
+            secret_env["CRYOSPARC_PASSWORD"] = cryosparc_password
+        title_source = micrographs_ref
+        artifact_roots = [stage_run_dir]
+        metadata.update(
+            {
+                "cryosparc_project": project,
+                "cryosparc_workspace": workspace,
+                "micrographs": micrographs_ref,
+                "particles": particles_ref,
+                "run_id": run_id,
+                "stage_run_dir": stage_run_dir,
+                "transfer_manifest": stage_run_dir / "transfer_manifest.json",
+            }
+        )
+
     output_dir = Path(
         _optional_str(payload.get("output_dir")) or str(work_dir / "cryofilter_output")
     ).expanduser()
@@ -729,7 +913,7 @@ def _build_infer_spec(payload: dict[str, Any], *, work_dir: Path) -> JobSpec:
     _add_option(argv, "--num-cpus", payload.get("num_cpus"))
     _add_option(argv, "--num-gpus", payload.get("num_gpus"))
     _add_option(argv, "--threshold", payload.get("threshold"))
-    _add_option(argv, "--particle-file", payload.get("particle_file"))
+    _add_option(argv, "--particle-file", particle_file)
     _add_option(argv, "--particle-csg", payload.get("particle_csg"))
     _add_option(argv, "--pixel-size-angstrom", payload.get("pixel_size_angstrom"))
     _add_option(argv, "--inference-profile", payload.get("inference_profile"))
@@ -737,21 +921,60 @@ def _build_infer_spec(payload: dict[str, Any], *, work_dir: Path) -> JobSpec:
         argv.append("--recursive")
     if _as_bool(payload.get("skip_existing"), default=False):
         argv.append("--skip-existing")
-    if _as_bool(payload.get("render_overlays"), default=True):
+    defer_overlays_until_typing = bool(
+        source_mode == "cryosparc" and publish_cryosparc_job and run_typing
+    )
+    if _as_bool(payload.get("render_overlays"), default=True) and particle_file and not defer_overlays_until_typing:
         argv.append("--render-particle-overlays")
     else:
         argv.append("--no-render-particle-overlays")
+        if _as_bool(payload.get("render_overlays"), default=True) and not defer_overlays_until_typing:
+            # Mask-only runs still get previews; particle overlays require picks.
+            argv.append("--render-images")
     if not export_masks:
         argv.append("--no-export-masks")
     if binned_masks:
         argv.append("--no-resample")
     argv.extend(_as_tokens(payload.get("extra_args")))
+    if source_mode == "cryosparc" and publish_cryosparc_job:
+        if not export_masks:
+            raise ValueError(
+                "Publishing a CryoSPARC mask job requires Export masks to remain enabled."
+            )
+        card_argv = stage_argv[: stage_argv.index("stage-test")]
+        card_argv.extend(
+            [
+                "inference-card",
+                "--project",
+                project,
+                "--workspace",
+                workspace,
+                "--local-run-dir",
+                str(stage_run_dir),
+                "--output-dir",
+                str(output_dir),
+            ]
+        )
+        _add_option(card_argv, "--typing-workers", payload.get("typing_workers"))
+        _add_option(
+            card_argv,
+            "--typing-sample-stride-px",
+            payload.get("typing_sample_stride_px"),
+        )
+        if run_typing:
+            card_argv.append("--run-typing")
+        card_argv.extend(["--", *argv[4:]])
+        steps.append(JobStep("cryoFILTER inference + CryoSPARC card", card_argv))
+    else:
+        steps.append(JobStep("cryoFILTER inference", argv))
+    artifact_roots.insert(0, output_dir)
     return JobSpec(
         kind="infer",
-        title=_optional_str(payload.get("title")) or f"Inference: {Path(input_path).name}",
-        steps=[JobStep("cryoFILTER inference", argv)],
-        artifact_roots=[output_dir],
-        metadata={
+        title=_optional_str(payload.get("title")) or f"Inference: {title_source}",
+        steps=steps,
+        artifact_roots=artifact_roots,
+        metadata=metadata
+        | {
             "input": input_path,
             "checkpoint": checkpoint,
             "output_dir": output_dir,
@@ -759,7 +982,10 @@ def _build_infer_spec(payload: dict[str, Any], *, work_dir: Path) -> JobSpec:
             "num_gpus": payload.get("num_gpus"),
             "export_masks": export_masks,
             "binned_masks": binned_masks,
+            "publish_cryosparc_job": publish_cryosparc_job,
+            "run_typing": run_typing,
         },
+        env=secret_env,
     )
 
 
@@ -1005,7 +1231,7 @@ def _build_otf_filter_spec(payload: dict[str, Any], *, work_dir: Path) -> JobSpe
     _add_option(argv, "--particle-exclusion-distance-angstrom", payload.get("particle_exclusion_distance_angstrom"))
     _add_option(argv, "--missing-masks", payload.get("missing_masks"))
     _add_option(argv, "--title", payload.get("title"))
-    return JobSpec(kind="cryosparc_filter_otf", title="Filter picks using OTF masks", env=env,
+    return JobSpec(kind="cryosparc_filter_otf", title="Filter picks using cryoFILTER masks", env=env,
                    steps=[JobStep("Filter and register particles", argv)], artifact_roots=[output],
                    metadata={"otf_job": payload.get("otf_job"), "particles": payload.get("particles"), "output_dir": str(output)})
 
@@ -1105,8 +1331,9 @@ def _build_annotation_spec(payload: dict[str, Any], *, work_dir: Path) -> JobSpe
 
     if not _optional_str(payload.get("cryosparc_base_url")):
         raise ValueError("Connect to CryoSPARC before launching annotation from a workspace output.")
-    micrographs_ref = _normalize_output_ref(
+    micrographs_ref = _output_ref_with_selection(
         _require_text(payload, "cryosparc_micrographs"),
+        payload.get("cryosparc_output"),
         default_output_name="micrographs",
     )
     instance_host, instance_port = _instance_url_host_port(payload.get("cryosparc_base_url"))
@@ -1933,8 +2160,9 @@ class AppState:
         if not _optional_str(payload.get("cryosparc_base_url")):
             raise ValueError("Connect to CryoSPARC before creating an annotation session.")
 
-        micrographs_ref = _normalize_output_ref(
+        micrographs_ref = _output_ref_with_selection(
             _require_text(payload, "cryosparc_micrographs"),
+            payload.get("cryosparc_output"),
             default_output_name="micrographs",
         )
         instance_host, instance_port = _instance_url_host_port(payload.get("cryosparc_base_url"))
@@ -2112,7 +2340,20 @@ class AppState:
             meta = self.update_job(job_id, cancel_requested=True)
             process = self.active.get(job_id)
             if process is not None and process.poll() is None:
-                process.terminate()
+                if os.name == "posix":
+                    try:
+                        os.killpg(process.pid, signal.SIGTERM)
+                    except ProcessLookupError:
+                        pass
+                else:
+                    process.terminate()
+            elif meta.get("status") == "queued":
+                meta = self.update_job(
+                    job_id,
+                    status="canceled",
+                    returncode=143,
+                    ended_at=utc_now(),
+                )
             return meta
 
     def read_log(self, job_id: str, *, offset: int | None = None, tail: int = MAX_LOG_BYTES_DEFAULT) -> dict[str, Any]:
@@ -2194,10 +2435,18 @@ class AppState:
         return candidate
 
     def _run_job(self, job_id: str) -> None:
+        if self.get_job(job_id).get("cancel_requested"):
+            self.update_job(job_id, status="canceled", returncode=143, ended_at=utc_now())
+            with self.lock:
+                self.secret_env.pop(job_id, None)
+            return
         meta = self.update_job(job_id, status="running", started_at=utc_now())
         log_path = Path(str(meta["log_file"]))
         try:
             for step in meta["steps"]:
+                if self.get_job(job_id).get("cancel_requested"):
+                    self.update_job(job_id, status="canceled", returncode=143, ended_at=utc_now())
+                    return
                 argv = [str(item) for item in step["argv"]]
                 self._append_log(log_path, f"\n$ {shlex.join(argv)}\n")
                 completed = self._run_step(job_id, argv, log_path)
@@ -2211,10 +2460,16 @@ class AppState:
                         ended_at=utc_now(),
                     )
                     return
-            self.update_job(job_id, status="succeeded", returncode=0, ended_at=utc_now())
+            latest = self.get_job(job_id)
+            if latest.get("cancel_requested"):
+                self.update_job(job_id, status="canceled", returncode=143, ended_at=utc_now())
+            else:
+                self.update_job(job_id, status="succeeded", returncode=0, ended_at=utc_now())
         except Exception as exc:
             self._append_log(log_path, f"\n{type(exc).__name__}: {exc}\n")
-            self.update_job(job_id, status="failed", returncode=1, ended_at=utc_now())
+            latest = self.get_job(job_id)
+            status = "canceled" if latest.get("cancel_requested") else "failed"
+            self.update_job(job_id, status=status, returncode=1, ended_at=utc_now())
         finally:
             with self.lock:
                 self.active.pop(job_id, None)
@@ -2225,18 +2480,21 @@ class AppState:
         env.setdefault("PYTHONUNBUFFERED", "1")
         with self.lock:
             env.update(self.secret_env.get(job_id, {}))
-        process = subprocess.Popen(
-            list(argv),
-            cwd=str(self.work_dir),
-            env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            bufsize=1,
-        )
         with self.lock:
+            if self.get_job(job_id).get("cancel_requested"):
+                return 143
+            process = subprocess.Popen(
+                list(argv),
+                cwd=str(self.work_dir),
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                bufsize=1,
+                start_new_session=(os.name == "posix"),
+            )
             self.active[job_id] = process
         assert process.stdout is not None
         with log_path.open("a", encoding="utf-8", errors="replace") as handle:
@@ -2332,6 +2590,7 @@ class CryoFilterHTTPServer(ThreadingHTTPServer):
 
 def make_handler(state: AppState) -> type[BaseHTTPRequestHandler]:
     static_dir = Path(__file__).resolve().parent / "static"
+    tutorial_dir = (_repo_root() / "docsite" / "site").resolve()
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "cryoFILTERApp/0.1"
@@ -2342,6 +2601,9 @@ def make_handler(state: AppState) -> type[BaseHTTPRequestHandler]:
             try:
                 if path == "/":
                     self._send_file(static_dir / "index.html")
+                    return
+                if path == "/tutorial" or path.startswith("/tutorial/"):
+                    self._send_tutorial(path, parsed.query)
                     return
                 if path.startswith("/static/"):
                     self._send_file(static_dir / path.removeprefix("/static/"))
@@ -2423,6 +2685,9 @@ def make_handler(state: AppState) -> type[BaseHTTPRequestHandler]:
                 if path == "/api/cryosparc/connect":
                     self._send_json(validate_cryosparc_connection(self._read_json()))
                     return
+                if path == "/api/cryosparc/job-outputs":
+                    self._send_json(discover_cryosparc_job_outputs(self._read_json()))
+                    return
                 if path == "/api/annotation/sessions":
                     self._send_json(
                         state.create_annotation_session(self._read_json()),
@@ -2492,6 +2757,42 @@ def make_handler(state: AppState) -> type[BaseHTTPRequestHandler]:
             self.end_headers()
             self.wfile.write(data)
 
+        def _send_tutorial(self, path: str, query: str) -> None:
+            # Only expose the generated site, never its source, env, or caches.
+            relative = unquote(path.removeprefix("/tutorial").lstrip("/"))
+            target = (tutorial_dir / relative).resolve()
+            if not target.is_relative_to(tutorial_dir):
+                self.send_error(HTTPStatus.FORBIDDEN)
+                return
+            if not (tutorial_dir / "index.html").is_file():
+                self._send_bytes(
+                    b'<!doctype html><html lang="en"><meta charset="utf-8">'
+                    b'<meta name="viewport" content="width=device-width, initial-scale=1">'
+                    b'<title>Prepare the tutorial - cryoFILTER</title>'
+                    b'<link rel="stylesheet" href="/static/styles.css">'
+                    b'<main style="max-width:48rem;margin:3rem auto;padding:1rem">'
+                    b'<h1>Prepare the tutorial once</h1>'
+                    b'<p>From your cryoFILTER source checkout, run:</p>'
+                    b'<pre>bash docsite/serve.sh --setup --build</pre>'
+                    b'<p>Then refresh this page. The tutorial uses the same app server '
+                    b'and SSH tunnel.</p><p><a href="/">Return to cryoFILTER</a></p></main></html>',
+                    content_type="text/html; charset=utf-8",
+                    status=HTTPStatus.SERVICE_UNAVAILABLE,
+                )
+                return
+            if target.is_dir():
+                if not path.endswith("/"):
+                    self.send_response(HTTPStatus.MOVED_PERMANENTLY)
+                    self.send_header("Location", path + "/" + ("?" + query if query else ""))
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
+                target = (target / "index.html").resolve()
+            if not target.is_relative_to(tutorial_dir):
+                self.send_error(HTTPStatus.FORBIDDEN)
+                return
+            self._send_file(target)
+
         def _send_file(self, path: Path) -> None:
             resolved = path.resolve()
             if str(path).startswith(str(static_dir)):
@@ -2521,6 +2822,7 @@ __all__ = [
     "JobStep",
     "add_subparser",
     "build_job_spec",
+    "discover_cryosparc_job_outputs",
     "runtime_status",
     "run",
     "validate_cryosparc_connection",

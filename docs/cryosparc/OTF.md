@@ -27,7 +27,7 @@ typing do not block mask availability.
    **Follow latest** to see a live gallery of up to ten micrographs, newest first.
    Each changed gallery starts a new checkpoint, and Follow latest automatically
    switches to it. Previous galleries remain accessible in checkpoint history.
-6. In **Filter Picks**, select **CryoSPARC OTF job**, enter that card number and a
+6. In **Filter Picks**, select **CryoSPARC mask job**, enter that card number and a
    completed particle job from the same project, then choose an exclusion distance.
    No mask-directory entry is needed. Bare particle job numbers and explicit
    outputs such as J20:particles are supported.

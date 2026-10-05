@@ -160,6 +160,11 @@ def add_subparser(subparsers: argparse._SubParsersAction) -> None:
     )
     stage.add_argument("--no-pull", action="store_true", help="Create the remote manifest but skip rsync pull.")
     stage.add_argument(
+        "--particle-star",
+        default=None,
+        help="After pulling, write staged particle coordinates to this local RELION STAR file.",
+    )
+    stage.add_argument(
         "--no-stage-micrographs",
         action="store_true",
         help="For manifest-only source inspection, skip creating remote micrograph symlinks.",
@@ -846,6 +851,11 @@ def _run_stage_test(args: argparse.Namespace, config: CryoSPARCIntegrationConfig
     no_stage_micrographs = bool(getattr(args, "no_stage_micrographs", False))
     if no_stage_micrographs and not args.no_pull:
         raise ValueError("--no-stage-micrographs requires --no-pull")
+    particle_star = getattr(args, "particle_star", None)
+    if particle_star and not particles_ref:
+        raise ValueError("--particle-star requires --particles")
+    if particle_star and args.no_pull:
+        raise ValueError("--particle-star cannot be used with --no-pull")
     if float(args.max_transfer_gb) <= 0:
         raise ValueError("--max-transfer-gb must be positive")
     run_id = str(UUID(args.run_id)) if args.run_id else str(uuid4())
@@ -930,6 +940,12 @@ def _run_stage_test(args: argparse.Namespace, config: CryoSPARCIntegrationConfig
             payload["transfer_skipped"] = False
             payload["pulled_file_count"] = file_count
             payload["pulled_bytes"] = pulled_bytes
+            if particle_star:
+                payload["particle_star"] = predict_helpers.write_particle_star_from_manifest(
+                    transfer_manifest_file=local_manifest_file,
+                    local_transfer_dir=local_transfer_dir,
+                    star_path=particle_star,
+                )
     except Exception as exc:
         payload["ok"] = False
         payload.setdefault("errors", []).append(f"{type(exc).__name__}: {exc}")
@@ -1455,6 +1471,7 @@ def _refresh_typed_particle_overlays(
             continue
 
         signature = _digest([
+            "five_panel_v1",
             [_file_stamp(path) for path in (local_path, mask_path, prob_path, typed_path)],
             manifest_stamp, particle_exclusion_distance_angstrom,
             {key: overlay.get(key) for key in ("max_display_dim", "particle_diameter_px", "mask_alpha")},
@@ -1505,6 +1522,7 @@ def _refresh_typed_particle_overlays(
                 include_raw_panel=True,
                 include_typed_mask_panel=True,
                 include_probability_panel=True,
+                include_retained_panel=True,
             )
             n_kept = int(np.count_nonzero(keep))
             n_removed = int(len(keep) - n_kept)
@@ -1543,6 +1561,7 @@ def _refresh_typed_particle_overlays(
         "mask_and_particles",
         "typed_mask",
         "probability_map",
+        "retained_regions",
     ]
     overlay["typed_mask_refresh"] = {
         "refreshed": int(refreshed),
@@ -1567,7 +1586,7 @@ def _require_typed_particle_overlay_refresh(refresh: dict[str, Any], *, run_typi
         examples = "; ".join(f"{stem}: {why}" for stem, why in list(skipped.items())[:3])
         reason = f"{reason}; {examples}"
     raise RuntimeError(
-        "Typing completed, but cryoFILTER could not create the 4-panel typed OTF images. "
+        "Typing completed, but cryoFILTER could not create the 5-panel typed OTF images. "
         f"{reason}"
     )
 
@@ -2757,7 +2776,15 @@ def _run_cryosparc(args: argparse.Namespace) -> int:
         return _run_build_diagnostics(args)
     if command == "attach-diagnostics":
         return _run_attach_diagnostics(args, config)
-    if command in {"predict", "finalize-run", "resume", "finalize-from-run", "otf", "filter-otf"}:
+    if command in {
+        "predict",
+        "finalize-run",
+        "resume",
+        "finalize-from-run",
+        "otf",
+        "filter-otf",
+        "inference-card",
+    }:
         # App cancellation sends SIGTERM. Unwind local subprocess supervisors
         # so their inference/typing worker groups are stopped and reaped.
         def terminate(_signum, _frame):
@@ -2773,6 +2800,9 @@ def _run_cryosparc(args: argparse.Namespace) -> int:
             if command == "filter-otf":
                 from cryofilter.cryosparc.otf_filter import run_filter
                 return run_filter(args, config)
+            if command == "inference-card":
+                from cryofilter.cryosparc.inference_card import run_inference_card
+                return run_inference_card(args, config)
             return _run_predict(args, config) if command == "predict" else _run_finalize_run(args, config)
         finally:
             if previous is not None:

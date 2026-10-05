@@ -1,0 +1,94 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="870" viewBox="0 0 1200 870" role="img" aria-labelledby="title desc">
+<title id="title">Proposed cryoFILTER documentation colors</title>
+<desc id="desc">Dark and light palettes with ten labeled color swatches each. Dark mode uses the app surfaces and cyan; light mode uses pale surfaces and darker cyan and status colors for readable text. This is a color study, not the implemented website.</desc>
+<rect x="0" y="0" width="1200" height="870" rx="0" fill="#F5F8FB"/>
+<text x="28" y="46" fill="#16222C" font-family="Arial, sans-serif" font-size="28" font-weight="600">cryoFILTER / Theme proposal</text>
+<text x="28" y="75" fill="#4E6273" font-family="Arial, sans-serif" font-size="16" font-weight="400">App colors, with contrast adjustments for documentation.</text>
+<rect x="28" y="100" width="550" height="718" rx="12" fill="#0A0F14" stroke="#61798A"/>
+<rect x="29" y="101" width="548" height="70" rx="11" fill="#0C131A"/>
+<rect x="48" y="120" width="32" height="32" rx="8" fill="#16222C" stroke="#2A3B49"/>
+<text x="54" y="141" fill="#4FB8D8" font-family="monospace" font-size="16" font-weight="500">cF</text>
+<text x="94" y="142" fill="#E6EEF4" font-family="Arial, sans-serif" font-size="19" font-weight="600">cryoFILTER</text>
+<text x="48" y="205" fill="#E6EEF4" font-family="Arial, sans-serif" font-size="23" font-weight="500">Dark — default</text>
+<text x="48" y="234" fill="#8DA0AE" font-family="Arial, sans-serif" font-size="12" font-weight="600">TOKEN</text>
+<text x="422" y="234" fill="#8DA0AE" font-family="Arial, sans-serif" font-size="12" font-weight="600">HEX</text>
+<rect x="48" y="255" width="28" height="28" rx="5" fill="#0A0F14" stroke="#61798A"/>
+<text x="90" y="275" fill="#E6EEF4" font-family="Arial, sans-serif" font-size="16" font-weight="400">Page</text>
+<text x="422" y="275" fill="#8DA0AE" font-family="monospace" font-size="16" font-weight="400">#0A0F14</text>
+<rect x="48" y="297" width="28" height="28" rx="5" fill="#101922" stroke="#61798A"/>
+<text x="90" y="317" fill="#E6EEF4" font-family="Arial, sans-serif" font-size="16" font-weight="400">Panel</text>
+<text x="422" y="317" fill="#8DA0AE" font-family="monospace" font-size="16" font-weight="400">#101922</text>
+<rect x="48" y="339" width="28" height="28" rx="5" fill="#070C10" stroke="#61798A"/>
+<text x="90" y="359" fill="#E6EEF4" font-family="Arial, sans-serif" font-size="16" font-weight="400">Code well</text>
+<text x="422" y="359" fill="#8DA0AE" font-family="monospace" font-size="16" font-weight="400">#070C10</text>
+<rect x="48" y="381" width="28" height="28" rx="5" fill="#E6EEF4" stroke="#61798A"/>
+<text x="90" y="401" fill="#E6EEF4" font-family="Arial, sans-serif" font-size="16" font-weight="400">Body text</text>
+<text x="422" y="401" fill="#8DA0AE" font-family="monospace" font-size="16" font-weight="400">#E6EEF4</text>
+<rect x="48" y="423" width="28" height="28" rx="5" fill="#8DA0AE" stroke="#61798A"/>
+<text x="90" y="443" fill="#E6EEF4" font-family="Arial, sans-serif" font-size="16" font-weight="400">Secondary text</text>
+<text x="422" y="443" fill="#8DA0AE" font-family="monospace" font-size="16" font-weight="400">#8DA0AE</text>
+<rect x="48" y="465" width="28" height="28" rx="5" fill="#4FB8D8" stroke="#61798A"/>
+<text x="90" y="485" fill="#E6EEF4" font-family="Arial, sans-serif" font-size="16" font-weight="400">Links / actions</text>
+<text x="422" y="485" fill="#8DA0AE" font-family="monospace" font-size="16" font-weight="400">#4FB8D8</text>
+<rect x="48" y="507" width="28" height="28" rx="5" fill="#04222B" stroke="#61798A"/>
+<text x="90" y="527" fill="#E6EEF4" font-family="Arial, sans-serif" font-size="16" font-weight="400">Action text</text>
+<text x="422" y="527" fill="#8DA0AE" font-family="monospace" font-size="16" font-weight="400">#04222B</text>
+<rect x="48" y="549" width="28" height="28" rx="5" fill="#3FBF9B" stroke="#61798A"/>
+<text x="90" y="569" fill="#E6EEF4" font-family="Arial, sans-serif" font-size="16" font-weight="400">Success</text>
+<text x="422" y="569" fill="#8DA0AE" font-family="monospace" font-size="16" font-weight="400">#3FBF9B</text>
+<rect x="48" y="591" width="28" height="28" rx="5" fill="#D9A441" stroke="#61798A"/>
+<text x="90" y="611" fill="#E6EEF4" font-family="Arial, sans-serif" font-size="16" font-weight="400">Warning</text>
+<text x="422" y="611" fill="#8DA0AE" font-family="monospace" font-size="16" font-weight="400">#D9A441</text>
+<rect x="48" y="633" width="28" height="28" rx="5" fill="#E57676" stroke="#61798A"/>
+<text x="90" y="653" fill="#E6EEF4" font-family="Arial, sans-serif" font-size="16" font-weight="400">Error</text>
+<text x="422" y="653" fill="#8DA0AE" font-family="monospace" font-size="16" font-weight="400">#E57676</text>
+<rect x="48" y="699" width="510" height="98" rx="8" fill="#101922"/>
+<text x="62" y="724" fill="#E6EEF4" font-family="Arial, sans-serif" font-size="16" font-weight="400">Readable text on a panel surface.</text>
+<rect x="62" y="740" width="150" height="38" rx="8" fill="#4FB8D8"/>
+<text x="80" y="765" fill="#04222B" font-family="Arial, sans-serif" font-size="15" font-weight="600">Primary action</text>
+<text x="240" y="765" fill="#4FB8D8" font-family="Arial, sans-serif" font-size="16" font-weight="400" text-decoration="underline">Tutorial link</text>
+<rect x="622" y="100" width="550" height="718" rx="12" fill="#F5F8FB" stroke="#61798A"/>
+<rect x="623" y="101" width="548" height="70" rx="11" fill="#FFFFFF"/>
+<rect x="642" y="120" width="32" height="32" rx="8" fill="#16222C" stroke="#2A3B49"/>
+<text x="648" y="141" fill="#4FB8D8" font-family="monospace" font-size="16" font-weight="500">cF</text>
+<text x="688" y="142" fill="#16222C" font-family="Arial, sans-serif" font-size="19" font-weight="600">cryoFILTER</text>
+<text x="642" y="205" fill="#16222C" font-family="Arial, sans-serif" font-size="23" font-weight="500">Light — optional</text>
+<text x="642" y="234" fill="#4E6273" font-family="Arial, sans-serif" font-size="12" font-weight="600">TOKEN</text>
+<text x="1016" y="234" fill="#4E6273" font-family="Arial, sans-serif" font-size="12" font-weight="600">HEX</text>
+<rect x="642" y="255" width="28" height="28" rx="5" fill="#F5F8FB" stroke="#61798A"/>
+<text x="684" y="275" fill="#16222C" font-family="Arial, sans-serif" font-size="16" font-weight="400">Page</text>
+<text x="1016" y="275" fill="#4E6273" font-family="monospace" font-size="16" font-weight="400">#F5F8FB</text>
+<rect x="642" y="297" width="28" height="28" rx="5" fill="#FFFFFF" stroke="#61798A"/>
+<text x="684" y="317" fill="#16222C" font-family="Arial, sans-serif" font-size="16" font-weight="400">Panel</text>
+<text x="1016" y="317" fill="#4E6273" font-family="monospace" font-size="16" font-weight="400">#FFFFFF</text>
+<rect x="642" y="339" width="28" height="28" rx="5" fill="#E6EEF4" stroke="#61798A"/>
+<text x="684" y="359" fill="#16222C" font-family="Arial, sans-serif" font-size="16" font-weight="400">Code well</text>
+<text x="1016" y="359" fill="#4E6273" font-family="monospace" font-size="16" font-weight="400">#E6EEF4</text>
+<rect x="642" y="381" width="28" height="28" rx="5" fill="#16222C" stroke="#61798A"/>
+<text x="684" y="401" fill="#16222C" font-family="Arial, sans-serif" font-size="16" font-weight="400">Body text</text>
+<text x="1016" y="401" fill="#4E6273" font-family="monospace" font-size="16" font-weight="400">#16222C</text>
+<rect x="642" y="423" width="28" height="28" rx="5" fill="#4E6273" stroke="#61798A"/>
+<text x="684" y="443" fill="#16222C" font-family="Arial, sans-serif" font-size="16" font-weight="400">Secondary text</text>
+<text x="1016" y="443" fill="#4E6273" font-family="monospace" font-size="16" font-weight="400">#4E6273</text>
+<rect x="642" y="465" width="28" height="28" rx="5" fill="#1C667D" stroke="#61798A"/>
+<text x="684" y="485" fill="#16222C" font-family="Arial, sans-serif" font-size="16" font-weight="400">Links / actions</text>
+<text x="1016" y="485" fill="#4E6273" font-family="monospace" font-size="16" font-weight="400">#1C667D</text>
+<rect x="642" y="507" width="28" height="28" rx="5" fill="#FFFFFF" stroke="#61798A"/>
+<text x="684" y="527" fill="#16222C" font-family="Arial, sans-serif" font-size="16" font-weight="400">Action text</text>
+<text x="1016" y="527" fill="#4E6273" font-family="monospace" font-size="16" font-weight="400">#FFFFFF</text>
+<rect x="642" y="549" width="28" height="28" rx="5" fill="#236955" stroke="#61798A"/>
+<text x="684" y="569" fill="#16222C" font-family="Arial, sans-serif" font-size="16" font-weight="400">Success</text>
+<text x="1016" y="569" fill="#4E6273" font-family="monospace" font-size="16" font-weight="400">#236955</text>
+<rect x="642" y="591" width="28" height="28" rx="5" fill="#7A5818" stroke="#61798A"/>
+<text x="684" y="611" fill="#16222C" font-family="Arial, sans-serif" font-size="16" font-weight="400">Warning</text>
+<text x="1016" y="611" fill="#4E6273" font-family="monospace" font-size="16" font-weight="400">#7A5818</text>
+<rect x="642" y="633" width="28" height="28" rx="5" fill="#B52222" stroke="#61798A"/>
+<text x="684" y="653" fill="#16222C" font-family="Arial, sans-serif" font-size="16" font-weight="400">Error</text>
+<text x="1016" y="653" fill="#4E6273" font-family="monospace" font-size="16" font-weight="400">#B52222</text>
+<rect x="642" y="699" width="510" height="98" rx="8" fill="#FFFFFF"/>
+<text x="656" y="724" fill="#16222C" font-family="Arial, sans-serif" font-size="16" font-weight="400">Readable text on a panel surface.</text>
+<rect x="656" y="740" width="150" height="38" rx="8" fill="#1C667D"/>
+<text x="674" y="765" fill="#FFFFFF" font-family="Arial, sans-serif" font-size="15" font-weight="600">Primary action</text>
+<text x="834" y="765" fill="#1C667D" font-family="Arial, sans-serif" font-size="16" font-weight="400" text-decoration="underline">Tutorial link</text>
+<text x="28" y="848" fill="#4E6273" font-family="Arial, sans-serif" font-size="14" font-weight="400">Color study only. Typography, components, and final layout await approval.</text>
+</svg>

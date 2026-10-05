@@ -63,7 +63,7 @@ def test_particle_overlay_renderer_writes_png_and_contact_sheet(tmp_path: Path) 
         mask=mask,
         coords_xy=coords,
         keep=keep,
-        output_path=tmp_path / "frame_four_panel.png",
+        output_path=tmp_path / "frame_five_panel.png",
         probability_map=probability,
         typed_mask=typed_mask,
         label="mic_001 kept 1 / rejected 1",
@@ -72,10 +72,11 @@ def test_particle_overlay_renderer_writes_png_and_contact_sheet(tmp_path: Path) 
         include_raw_panel=True,
         include_typed_mask_panel=True,
         include_probability_panel=True,
+        include_retained_panel=True,
         panel_gap_px=8,
     )
     typed = Image.open(typed_path)
-    assert typed.size[0] == arr.shape[1] * 4 + 24
+    assert typed.size[0] == arr.shape[1] * 5 + 32
     assert typed.size[1] == arr.shape[0]
 
     sheet_path = montage_from_paths(
@@ -96,6 +97,7 @@ def test_white_export_preserves_scientific_panels_and_default_gaps(tmp_path):
     kwargs = dict(image=raw, mask=mask, coords_xy=np.empty((0, 2)), keep=np.empty(0, dtype=bool),
                   probability_map=(raw - raw.min()) / np.ptp(raw), typed_mask=mask,
                   include_raw_panel=True, include_probability_panel=True, include_typed_mask_panel=True,
+                  include_retained_panel=True,
                   typed_mask_label=None, max_display_dim=160)
     ui = render_particle_overlay_png(**kwargs, output_path=tmp_path / "ui.png")
     exported = render_particle_overlay_png(**kwargs, output_path=tmp_path / "white.png", white_background=True)
@@ -105,10 +107,10 @@ def test_white_export_preserves_scientific_panels_and_default_gaps(tmp_path):
         white = np.asarray(picture)
     header = white.shape[0] - dark.shape[0]
     assert header > 0
-    for i in range(4):
+    for i in range(5):
         x = i * (raw.shape[1] + 16)
         assert np.array_equal(white[header:, x:x + 160], dark[:, x:x + 160])
         assert np.all(white[0, x:x + 160] == 255)
-        if i < 3:
+        if i < 4:
             assert np.all(dark[:, x + 160:x + 176] == 25)
             assert np.all(white[:, x + 160:x + 176] == 255)

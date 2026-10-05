@@ -129,9 +129,15 @@ def connect_exposure_input(
     )
 
 
-def start_external_job(external_job: object) -> None:
+def start_external_job(external_job: object, *, status: str | None = None) -> None:
     starter = getattr(external_job, "start", None)
     if callable(starter):
+        if status is not None:
+            try:
+                starter(status=status)
+                return
+            except TypeError:
+                pass
         starter()
 
 
@@ -198,6 +204,40 @@ def add_particle_output(
             )
         except TypeError:
             return add_output("particle", name, slot_list, title)
+
+
+def add_exposure_output(
+    external_job: object,
+    *,
+    name: str,
+    slots: Iterable[str],
+    title: str,
+    passthrough: str = "input_micrographs",
+    alloc: object | None = None,
+) -> object:
+    add_output = getattr(external_job, "add_output")
+    slot_list = list(slots)
+    try:
+        return add_output(
+            type="exposure",
+            name=name,
+            passthrough=passthrough,
+            slots=slot_list,
+            title=title,
+            alloc=alloc,
+        )
+    except TypeError:
+        try:
+            return add_output(
+                "exposure",
+                name,
+                passthrough=passthrough,
+                slots=slot_list,
+                title=title,
+                alloc=alloc,
+            )
+        except TypeError:
+            return add_output("exposure", name, slot_list, title)
 
 
 def save_output(external_job: object, name: str, dataset: object) -> None:
@@ -304,6 +344,7 @@ def supports_job_plot_logs() -> bool:
 
 
 __all__ = [
+    "add_exposure_output",
     "add_particle_output",
     "connect_exposure_input",
     "connect_input",

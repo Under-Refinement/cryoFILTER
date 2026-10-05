@@ -7,6 +7,7 @@ import sqlite3
 from pathlib import Path
 
 FORMAT = "cryofilter-otf-v1"
+MASK_CARD_FORMAT = "cryofilter-mask-card-v1"
 CARD_FILE = "cryofilter_otf.json"
 
 
@@ -118,11 +119,15 @@ class Index:
 
 def read_card(job_dir: Path, *, project: str, job_uid: str):
     card = json.loads((Path(job_dir) / CARD_FILE).read_text())
-    if card.get("format") != FORMAT or card.get("project") != project or card.get("job_uid") != job_uid:
-        raise ValueError("This card does not contain a matching cryoFILTER OTF index")
+    if (
+        card.get("format") not in {FORMAT, MASK_CARD_FORMAT}
+        or card.get("project") != project
+        or card.get("job_uid") != job_uid
+    ):
+        raise ValueError("This card does not contain a matching cryoFILTER mask index")
     path = Path(card["index_path"])
     if not path.is_file():
-        raise FileNotFoundError(f"OTF masks/index are not accessible on this machine: {path}")
+        raise FileNotFoundError(f"cryoFILTER masks/index are not accessible on this machine: {path}")
     return card, path
 
 
@@ -133,10 +138,18 @@ def monitor_summary(path: Path, *, mode="all", count=100):
         # model record, reopen masks, or read any original micrographs.
         rows = index.db.execute("SELECT pixels,contaminated,carbon,crystalline,aggregate,ethane,typed FROM stats ORDER BY rowid").fetchall()
         status = index.get_meta("status", {})
+        card_kind = index.get_meta("card_kind")
     finally:
         index.close()
     completed = [row for row in rows if row[0] is not None]
-    selected = completed[:count] if mode == "first" else completed[-count:] if mode == "last" else completed
+    typed_rows = [row for row in completed if row[6]]
+    showing_batch_typing = bool(
+        card_kind == "batch_inference"
+        and status.get("run_typing")
+        and status.get("phase") in {"typing", "completed"}
+    )
+    display_rows = typed_rows if showing_batch_typing else completed
+    selected = display_rows[:count] if mode == "first" else display_rows[-count:] if mode == "last" else display_rows
     pixels = sum(row[0] for row in selected)
     contaminated = sum(row[1] for row in selected)
     from cryofilter.app.server import CONTAMINATION_TYPE_COLORS, CONTAMINATION_TYPE_LABELS
@@ -144,9 +157,11 @@ def monitor_summary(path: Path, *, mode="all", count=100):
     for column, label in enumerate(CONTAMINATION_TYPE_LABELS, start=2):
         area = sum(row[column] or 0 for row in selected)
         types.append({"label": label, "color": CONTAMINATION_TYPE_COLORS[label], "area_px": area})
-    typed = sum(row[6] for row in rows)
-    return {"ok": True, "available": bool(completed), "source": "otf", "mode": mode,
-            "count": count, "n_images": len(selected), "n_images_completed": len(completed),
+    typed = len(typed_rows)
+    return {"ok": True, "available": bool(completed),
+            "source": "typing" if showing_batch_typing else "otf", "mode": mode,
+            "count": count, "n_images": len(selected),
+            "n_images_completed": typed if showing_batch_typing else len(completed),
             "n_images_total": max(len(rows), status.get("expected", 0)),
             "n_images_typed": typed, "total_pixels": pixels, "contaminated_pixels": contaminated,
             "clean_pixels": pixels - contaminated, "contamination_fraction": contaminated / max(1, pixels),

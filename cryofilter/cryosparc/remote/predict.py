@@ -334,6 +334,7 @@ def write_typing_manifest_from_transfer(
     manifest_path: str | Path,
     dataset_id: str | None = None,
     require_all_masks: bool = True,
+    include_stems: Sequence[str] | None = None,
 ) -> dict[str, Any]:
     """Write a contamination typing CSV manifest from staged micrographs and masks."""
 
@@ -347,13 +348,17 @@ def write_typing_manifest_from_transfer(
 
     rows: list[dict[str, object]] = []
     missing_masks: list[str] = []
+    selected_stems = None if include_stems is None else {str(value) for value in include_stems}
     resolved_dataset_id = dataset_id or str(manifest.get("workspace_uid") or "cryosparc")
     for entry in micrographs:
         if not isinstance(entry, dict):
             continue
         local_path = _manifest_micrograph_path(transfer_dir, entry)
         mask_path = _mask_output_path(mask_dir, local_path.stem)
-        if not mask_path.exists():
+        if (
+            selected_stems is not None
+            and local_path.stem not in selected_stems
+        ) or not mask_path.exists():
             missing_masks.append(str(mask_path))
             continue
         rows.append(
@@ -412,6 +417,7 @@ def _build_typing_command_and_env(
     shard_index: int | None = None,
     shard_count: int | None = None,
     sample_stride_px: int | None = None,
+    typing_batch_size: int | None = None,
 ) -> tuple[list[str], dict[str, str]]:
     command = [
         sys.executable,
@@ -437,6 +443,8 @@ def _build_typing_command_and_env(
         command.extend(["--shard-index", str(int(shard_index or 0)), "--shard-count", str(int(shard_count))])
     if sample_stride_px is not None:
         command.extend(["--typing-sample-stride-px", str(int(sample_stride_px))])
+    if typing_batch_size is not None:
+        command.extend(["--typing-batch-size", str(int(typing_batch_size))])
     if incremental:
         command.append("--incremental")
     env = os.environ.copy()
@@ -468,6 +476,7 @@ def run_local_typing(
     weights_dir: str | Path | None = None,
     typing_device: str | None = None,
     sample_stride_px: int | None = None,
+    typing_batch_size: int | None = None,
 ) -> list[str]:
     """Run cryoFILTER contamination typing on inference masks."""
 
@@ -476,10 +485,10 @@ def run_local_typing(
         min_component_area_px=min_component_area_px, pixel_size_angstrom=pixel_size_angstrom,
         expected_images=expected_images, env_overrides=env_overrides, workers=workers,
         incremental=incremental, weights_dir=weights_dir, typing_device=typing_device,
-        sample_stride_px=sample_stride_px,
+        sample_stride_px=sample_stride_px, typing_batch_size=typing_batch_size,
     )
     print(
-        "Running contamination typing; 4-panel OTF images will refresh as typing outputs are written.",
+        "Running contamination typing; 5-panel OTF images will refresh as typing outputs are written.",
         flush=True,
     )
     print("Executing:", " ".join(shlex.quote(part) for part in command), flush=True)
@@ -506,6 +515,7 @@ def run_local_typing_multi_gpu(
     cancel_event: Any = None,
     weights_dir: str | Path | None = None,
     sample_stride_px: int | None = None,
+    typing_batch_size: int | None = None,
 ) -> list[list[str]]:
     """Shard publication typing across one or more dedicated GPUs so it never contends
     with GPU inference for memory, then run one more (model-free) invocation to
@@ -528,6 +538,7 @@ def run_local_typing_multi_gpu(
             poll_callback=poll_callback, poll_interval=poll_interval, workers=workers,
             incremental=incremental, cancel_event=cancel_event, weights_dir=weights_dir,
             typing_device=typing_device, sample_stride_px=sample_stride_px,
+            typing_batch_size=typing_batch_size,
         )
         return [command]
 
@@ -541,13 +552,14 @@ def run_local_typing_multi_gpu(
             expected_images=expected_images, env_overrides=env_overrides, workers=workers,
             incremental=incremental, weights_dir=weights_dir, typing_device="cuda:0",
             shard_index=shard_index, shard_count=shard_count, sample_stride_px=sample_stride_px,
+            typing_batch_size=typing_batch_size,
         )
         env["CUDA_VISIBLE_DEVICES"] = device_token
         commands.append(command)
         envs.append(env)
     print(
         f"Running contamination typing across {shard_count} dedicated GPU(s) (device(s) "
-        f"{', '.join(devices)}); 4-panel OTF images will refresh once each shard's images "
+        f"{', '.join(devices)}); 5-panel OTF images will refresh once each shard's images "
         "are typed and the results are aggregated.",
         flush=True,
     )
@@ -563,7 +575,7 @@ def run_local_typing_multi_gpu(
         expected_images=expected_images, timeout=timeout, env_overrides=env_overrides,
         poll_callback=None, poll_interval=poll_interval, workers=workers, incremental=incremental,
         cancel_event=cancel_event, weights_dir=weights_dir, typing_device="cuda:0",
-        sample_stride_px=sample_stride_px,
+        sample_stride_px=sample_stride_px, typing_batch_size=typing_batch_size,
     )
     commands.append(aggregate_command)
     return commands

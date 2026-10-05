@@ -405,6 +405,27 @@ def render_typed_mask_frame(
     return np.asarray(base.convert("RGB"), dtype=np.uint8)
 
 
+def render_retained_regions_frame(
+    img8: np.ndarray,
+    mask: np.ndarray,
+    *,
+    label: str | None = None,
+) -> np.ndarray:
+    """Render the image with excluded contamination muted to expose retained regions."""
+
+    return render_fast(
+        img8,
+        mask,
+        np.empty((0, 2), dtype=np.float32),
+        np.empty(0, dtype=bool),
+        label=label,
+        mask_rgb=(238, 234, 247),
+        mask_alpha=0.90,
+        mask_outline_rgb=MASK_OUTLINE_RGB,
+        mask_outline_alpha=0.88,
+    )
+
+
 def side_by_side(
     left: np.ndarray,
     right: np.ndarray,
@@ -458,6 +479,7 @@ def render_particle_overlay_png(
     include_raw_panel: bool = False,
     include_typed_mask_panel: bool = False,
     include_probability_panel: bool = False,
+    include_retained_panel: bool = False,
     panel_gap_px: int = 16,
     white_background: bool = False,
 ) -> Path:
@@ -496,6 +518,8 @@ def render_particle_overlay_png(
         if probability_map is None:
             raise ValueError("include_probability_panel=True requires probability_map")
         panels.append(render_probability_frame(probability_map, tuple(img8.shape)))
+    if include_retained_panel:
+        panels.append(render_retained_regions_frame(img8, mask_disp))
     if white_background:
         # Opt-in export presentation. Keep scientific pixels untouched and put
         # captions above each panel, on white, rather than over the micrograph.
@@ -505,6 +529,8 @@ def render_particle_overlay_png(
             captions.append("Typed contamination")
         if include_probability_panel:
             captions.append("Probability")
+        if include_retained_panel:
+            captions.append("Retained regions")
         titled = []
         font_size = max(16, int(round(img8.shape[0] * 0.035)))
         font = _load_label_font(font_size)

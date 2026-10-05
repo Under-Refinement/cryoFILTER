@@ -235,3 +235,13 @@ setup_git.sh
 activate_env.sh
 fix_qt.sh
 train_and_apply_model.sh
+
+# Local credentials and connection configuration (never publish)
+.env
+.env.*
+.ssh/
+ssh_config
+cryosparc.toml
+*.pem
+*.key
+*.safetensors

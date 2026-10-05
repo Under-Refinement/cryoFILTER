@@ -5,6 +5,7 @@ import re
 import socket
 import sys
 import threading
+import time
 from http.client import HTTPConnection
 from pathlib import Path
 
@@ -19,6 +20,7 @@ from cryofilter.app.server import (
     _app_startup_lines,
     _bind_app_server,
     build_job_spec,
+    discover_cryosparc_job_outputs,
     make_handler,
     runtime_status,
     validate_cryosparc_connection,
@@ -134,6 +136,94 @@ def test_app_static_files_are_not_cached(tmp_path: Path) -> None:
         thread.join(timeout=2)
 
 
+@pytest.fixture
+def tutorial_app(tmp_path: Path, monkeypatch):
+    checkout = tmp_path / "checkout"
+    monkeypatch.setattr(app_server, "_repo_root", lambda: checkout)
+    server, port = _bind_app_server(
+        host="127.0.0.1", port=0,
+        handler_cls=make_handler(AppState(tmp_path / "work")),
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    connection = HTTPConnection("127.0.0.1", port, timeout=2)
+    try:
+        yield connection, checkout / "docsite" / "site"
+    finally:
+        connection.close()
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_app_serves_tutorial_pages_assets_and_redirects(tutorial_app) -> None:
+    connection, site = tutorial_app
+    files = {
+        "index.html": (b"Tutorial home", "text/html"),
+        "demo/index.html": (b"Demo walkthrough", "text/html"),
+        "search/search_index.json": (b'{"docs":[]}', "application/json"),
+        "assets/site.css": (b"body {color: white}", "text/css"),
+        "assets/worker.js": (b"self.onmessage = () => {};", "javascript"),
+    }
+    for relative, (body, _) in files.items():
+        target = site / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(body)
+    for relative, (body, content_type) in files.items():
+        url = "/tutorial/" + relative.removesuffix("index.html")
+        connection.request("GET", url)
+        response = connection.getresponse()
+        assert response.read() == body
+        assert response.status == 200
+        assert content_type in response.getheader("Content-Type")
+        assert response.getheader("Cache-Control") == "no-cache"
+    for path in ["/tutorial", "/tutorial/demo"]:
+        connection.request("GET", path + "?q=otf")
+        response = connection.getresponse()
+        response.read()
+        assert response.status == 301
+        assert response.getheader("Location") == path + "/?q=otf"
+    connection.request("GET", "/tutorial/missing.html")
+    response = connection.getresponse()
+    response.read()
+    assert response.status == 404
+    connection.request("GET", "/")
+    response = connection.getresponse()
+    assert b'href="/tutorial/"' in response.read()
+    assert response.status == 200
+
+
+def test_app_tutorial_explains_missing_build_without_breaking_app(tutorial_app) -> None:
+    connection, _site = tutorial_app
+    connection.request("GET", "/tutorial/")
+    response = connection.getresponse()
+    assert b"bash docsite/serve.sh --setup --build" in response.read()
+    assert response.status == 503
+    connection.request("GET", "/api/jobs")
+    response = connection.getresponse()
+    assert json.loads(response.read()) == {"jobs": []}
+    assert response.status == 200
+
+
+def test_app_tutorial_blocks_parent_paths_and_symlinks(tutorial_app) -> None:
+    connection, site = tutorial_app
+    site.mkdir(parents=True)
+    (site / "index.html").write_text("Tutorial home")
+    private = site.parent / "private.txt"
+    private.write_text("must not be served")
+    (site / "linked.txt").symlink_to(private)
+    (site / "linked-page").mkdir()
+    (site / "linked-page" / "index.html").symlink_to(private)
+    for path in [
+        "../private.txt", "%2e%2e/private.txt", "%2e%2e%2fprivate.txt",
+        "linked.txt", "linked-page/",
+    ]:
+        connection.request("GET", "/tutorial/" + path)
+        response = connection.getresponse()
+        assert b"must not be served" not in response.read()
+        assert response.status == 403
+
+
 def test_cryosparc_connect_button_uses_isolated_handler() -> None:
     static_root = Path(__file__).resolve().parents[1] / "cryofilter" / "app" / "static"
     html = (static_root / "index.html").read_text(encoding="utf-8")
@@ -149,7 +239,7 @@ def test_cryosparc_connect_button_uses_isolated_handler() -> None:
     assert 'type="button"' in html
     assert 'data-credential-name="cryosparc_password"' in html
     assert 'autocomplete="new-password"' in html
-    assert "/static/connect.js?v=20260909-live-summary-ui" in html
+    assert "/static/connect.js?v=20260926-cryosparc-inference" in html
     assert html.index("/static/connect.js") < html.index("/static/app.js")
     assert "onsubmit=" not in html
     assert "onclick=" not in html
@@ -162,11 +252,73 @@ def test_cryosparc_connect_button_uses_isolated_handler() -> None:
     assert "function receiveCryosparcConnection" in script
     assert "function hasCryosparcConnection" in script
     assert 'kind === "cryosparc_predict" ||' in script
+    assert '(kind === "infer" && payload.source_mode === "cryosparc")' in script
     assert "!hasCryosparcConnection()" in script
     assert "window.cryoFilterSetCryosparcGate" in script
     assert "window.cryoFilterSyncCryosparcRunCredentials" in script
     assert ".cryosparc-gate.is-locked::before" in styles
     assert "pointer-events: none;" in styles
+
+
+def test_annotation_form_discovers_and_requires_specific_cryosparc_output() -> None:
+    static_root = Path(__file__).resolve().parents[1] / "cryofilter" / "app" / "static"
+    html = (static_root / "index.html").read_text(encoding="utf-8")
+    script = (static_root / "app.js").read_text(encoding="utf-8")
+
+    assert 'id="annotationCryosparcMicrographs"' in html
+    assert 'id="annotationCryosparcOutput"' in html
+    assert "Choose an output..." in script
+    assert 'api("/api/cryosparc/job-outputs"' in script
+    assert "payload.cryosparc_micrographs = micrographsRef" in script
+
+
+def test_discover_cryosparc_job_outputs_uses_direct_job_lookup() -> None:
+    class FakeJob:
+        outputs = {"remainder": object(), "split_0": object(), "split_1": object()}
+        model = {"spec": {"outputs": {"root": outputs}}}
+
+    class FakeClient:
+        def __init__(self) -> None:
+            self.lookups: list[tuple[str, str]] = []
+
+        def find_job(self, project_uid: str, job_uid: str) -> FakeJob:
+            self.lookups.append((project_uid, job_uid))
+            return FakeJob()
+
+        def find_project(self, _project_uid: str) -> None:
+            raise AssertionError("output discovery must not load a project controller")
+
+    client = FakeClient()
+    result = discover_cryosparc_job_outputs(
+        {
+            "cryosparc_base_url": "http://cryosparc.example.edu:39000",
+            "cryosparc_email": "user@example.edu",
+            "cryosparc_password": "secret",
+            "project_uid": "p306",
+            "job_uid": "j389",
+        },
+        make_client=lambda **_kwargs: client,
+    )
+
+    assert result["outputs"] == ["remainder", "split_0", "split_1"]
+    assert client.lookups == [("P306", "J389")]
+
+
+def test_inference_form_offers_local_and_cryosparc_sources() -> None:
+    static_root = Path(__file__).resolve().parents[1] / "cryofilter" / "app" / "static"
+    html = (static_root / "index.html").read_text(encoding="utf-8")
+    script = (static_root / "app.js").read_text(encoding="utf-8")
+
+    assert 'id="inferenceForm"' in html
+    assert 'id="inferenceSourceMode"' in html
+    assert '<option value="cryosparc">CryoSPARC output</option>' in html
+    assert 'name="cryosparc_micrographs" required disabled' in html
+    assert 'name="cryosparc_particles" disabled' in html
+    assert 'name="max_transfer_gb" type="number" min="0.001" step="any" value="25" disabled' in html
+    assert 'name="run_typing" type="checkbox" checked disabled' in html
+    assert 'name="typing_sample_stride_px" disabled' in html
+    assert "function updateInferenceSourceFields()" in script
+    assert '$("#inferenceSourceMode")?.addEventListener("change", updateInferenceSourceFields)' in script
 
 
 def test_live_summary_ui_layout_and_palette() -> None:
@@ -243,6 +395,22 @@ def test_infer_job_spec_builds_cli_command(tmp_path: Path) -> None:
     assert spec.artifact_roots == [tmp_path / "out"]
 
 
+@pytest.mark.parametrize("particle_file", [None, "", "   "])
+def test_infer_defaults_generate_previews_without_particles(tmp_path: Path, particle_file: str | None) -> None:
+    payload = {
+        "input": "/path/to/micrographs",
+        "checkpoint": "custom_weights.pt",
+        "output_dir": str(tmp_path / "out"),
+    }
+    if particle_file is not None:
+        payload["particle_file"] = particle_file
+    spec = build_job_spec("infer", payload, work_dir=tmp_path)
+    args = _build_parser().parse_args(spec.steps[0].argv[3:])
+    assert not args.particle_file
+    assert args.render_particle_overlays is False
+    assert args.render_images is True
+
+
 def test_infer_job_spec_can_disable_visible_mask_exports(tmp_path: Path) -> None:
     spec = build_job_spec(
         "infer",
@@ -261,6 +429,7 @@ def test_infer_job_spec_can_disable_visible_mask_exports(tmp_path: Path) -> None
     assert "--no-export-masks" in argv
     assert "--no-resample" not in argv
     assert "--no-render-particle-overlays" in argv
+    assert _build_parser().parse_args(argv[3:]).render_images is False
     assert spec.metadata["export_masks"] is False
     assert spec.metadata["binned_masks"] is False
 
@@ -290,6 +459,166 @@ def test_infer_job_spec_leaves_binned_masks_off_by_default(tmp_path: Path) -> No
 
     assert "--no-resample" not in spec.steps[0].argv
     assert spec.metadata["binned_masks"] is False
+
+
+def test_infer_job_spec_can_stage_cryosparc_micrographs_without_particles(tmp_path: Path) -> None:
+    output_dir = tmp_path / "output"
+    spec = build_job_spec(
+        "infer",
+        {
+            "source_mode": "cryosparc",
+            "cryosparc_base_url": "http://cryosparc.example.edu:39000/browse/P7-W2-J8",
+            "cryosparc_email": "user@example.edu",
+            "cryosparc_password": "unit-test-secret",
+            "cryosparc_project": "P7",
+            "cryosparc_workspace": "W2",
+            "cryosparc_micrographs": "J8",
+            "checkpoint": "custom_weights.pt",
+            "output_dir": str(output_dir),
+            "local_run_root": str(tmp_path / "staging"),
+            "limit_micrographs": "12",
+        },
+        work_dir=tmp_path,
+    )
+
+    assert [step.name for step in spec.steps] == [
+        "Stage CryoSPARC inputs",
+        "cryoFILTER inference + CryoSPARC card",
+    ]
+    stage_argv = spec.steps[0].argv
+    infer_argv = spec.steps[1].argv
+    assert stage_argv[:4] == [sys.executable, "-m", "cryofilter.cli", "cryosparc"]
+    assert "stage-test" in stage_argv
+    assert stage_argv[stage_argv.index("--project") + 1] == "P7"
+    assert stage_argv[stage_argv.index("--workspace") + 1] == "W2"
+    assert stage_argv[stage_argv.index("--micrographs") + 1] == "J8:micrographs"
+    assert stage_argv[stage_argv.index("--cryosparc-host") + 1] == "cryosparc.example.edu"
+    assert stage_argv[stage_argv.index("--limit-micrographs") + 1] == "12"
+    assert "--particles" not in stage_argv
+    assert "--particle-star" not in stage_argv
+    assert "--create-external-job" in stage_argv
+    run_id = stage_argv[stage_argv.index("--run-id") + 1]
+    stage_run_dir = tmp_path / "staging" / run_id
+    assert "inference-card" in infer_argv
+    assert infer_argv[infer_argv.index("--local-run-dir") + 1] == str(stage_run_dir)
+    assert infer_argv[infer_argv.index("--input") + 1] == str(stage_run_dir / "transfer" / "micrographs")
+    assert "--particle-file" not in infer_argv
+    assert "--render-images" not in infer_argv
+    assert spec.metadata["source_mode"] == "cryosparc"
+    assert spec.metadata["particles"] is None
+    assert spec.metadata["publish_cryosparc_job"] is True
+    assert spec.metadata["run_typing"] is True
+    assert spec.artifact_roots == [output_dir, stage_run_dir]
+    assert spec.env == {"CRYOSPARC_PASSWORD": "unit-test-secret"}
+    assert "unit-test-secret" not in json.dumps(spec.as_dict())
+
+    parsed = _build_parser().parse_args(stage_argv[3:])
+    assert parsed.cryosparc_command == "stage-test"
+    assert parsed.all_micrographs is False
+    assert parsed.particle_star is None
+    assert parsed.create_external_job is True
+
+    parsed_card = _build_parser().parse_args(infer_argv[3:])
+    assert parsed_card.cryosparc_command == "inference-card"
+    assert parsed_card.project == "P7"
+    assert parsed_card.workspace == "W2"
+    assert parsed_card.run_typing is True
+    assert parsed_card.typing_sample_stride_px == 64
+    assert "--input" in parsed_card.infer_args
+
+
+def test_infer_job_spec_can_disable_cryosparc_card_publication(tmp_path: Path) -> None:
+    spec = build_job_spec(
+        "infer",
+        {
+            "source_mode": "cryosparc",
+            "cryosparc_base_url": "http://cryosparc.example.edu:39000",
+            "cryosparc_project": "P7",
+            "cryosparc_workspace": "W2",
+            "cryosparc_micrographs": "J8",
+            "checkpoint": "custom_weights.pt",
+            "publish_cryosparc_job": False,
+        },
+        work_dir=tmp_path,
+    )
+
+    assert [step.name for step in spec.steps] == ["Stage CryoSPARC inputs", "cryoFILTER inference"]
+    assert "--create-external-job" not in spec.steps[0].argv
+    assert spec.steps[1].argv[3] == "infer"
+    assert spec.metadata["publish_cryosparc_job"] is False
+    assert spec.metadata["run_typing"] is False
+
+
+def test_infer_job_spec_can_disable_typing_on_published_card(tmp_path: Path) -> None:
+    spec = build_job_spec(
+        "infer",
+        {
+            "source_mode": "cryosparc",
+            "cryosparc_base_url": "http://cryosparc.example.edu:39000",
+            "cryosparc_project": "P7",
+            "cryosparc_workspace": "W2",
+            "cryosparc_micrographs": "J8",
+            "checkpoint": "custom_weights.pt",
+            "run_typing": False,
+        },
+        work_dir=tmp_path,
+    )
+
+    parsed_card = _build_parser().parse_args(spec.steps[1].argv[3:])
+    assert parsed_card.cryosparc_command == "inference-card"
+    assert parsed_card.run_typing is False
+    assert "--render-images" in parsed_card.infer_args
+    assert spec.metadata["run_typing"] is False
+
+
+def test_infer_job_spec_requires_exported_masks_for_cryosparc_card(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="requires Export masks"):
+        build_job_spec(
+            "infer",
+            {
+                "source_mode": "cryosparc",
+                "cryosparc_base_url": "http://cryosparc.example.edu:39000",
+                "cryosparc_project": "P7",
+                "cryosparc_workspace": "W2",
+                "cryosparc_micrographs": "J8",
+                "checkpoint": "custom_weights.pt",
+                "export_masks": False,
+            },
+            work_dir=tmp_path,
+        )
+
+
+def test_infer_job_spec_can_stage_optional_cryosparc_particles(tmp_path: Path) -> None:
+    spec = build_job_spec(
+        "infer",
+        {
+            "source_mode": "cryosparc",
+            "cryosparc_base_url": "cryosparc.example.edu:39000",
+            "cryosparc_project": "P1",
+            "cryosparc_workspace": "W3",
+            "cryosparc_micrographs": "J20:exposures",
+            "cryosparc_particles": "J21",
+            "checkpoint": "custom_weights.pt",
+            "output_dir": str(tmp_path / "output"),
+        },
+        work_dir=tmp_path,
+    )
+
+    stage_argv = spec.steps[0].argv
+    infer_argv = spec.steps[1].argv
+    run_id = stage_argv[stage_argv.index("--run-id") + 1]
+    particle_star = tmp_path / "cryofilter_runs" / "inference_staging" / run_id / "particles_from_cryosparc.star"
+    assert stage_argv[stage_argv.index("--micrographs") + 1] == "J20:exposures"
+    assert stage_argv[stage_argv.index("--particles") + 1] == "J21:particles"
+    assert stage_argv[stage_argv.index("--particle-star") + 1] == str(particle_star)
+    assert "--all-micrographs" in stage_argv
+    assert infer_argv[infer_argv.index("--particle-file") + 1] == str(particle_star)
+    assert "--no-render-particle-overlays" in infer_argv
+    assert spec.metadata["particles"] == "J21:particles"
+
+    parsed = _build_parser().parse_args(stage_argv[3:])
+    assert parsed.all_micrographs is True
+    assert parsed.particle_star == str(particle_star)
 
 
 def test_cryosparc_predict_job_spec_uses_typing_default(tmp_path: Path) -> None:
@@ -653,6 +982,7 @@ def test_annotation_job_spec_can_stage_cryosparc_micrographs(tmp_path: Path) -> 
             "cryosparc_project": "P306",
             "cryosparc_workspace": "W1",
             "cryosparc_micrographs": "J42",
+            "cryosparc_output": "split_1",
             "output_root": str(tmp_path / "annotations"),
             "output_name": "from_cs",
         },
@@ -667,7 +997,7 @@ def test_annotation_job_spec_can_stage_cryosparc_micrographs(tmp_path: Path) -> 
     assert stage_argv[stage_argv.index("--host") + 1] == "local"
     assert stage_argv[stage_argv.index("--cryosparc-host") + 1] == "cryosparc.example.edu"
     assert stage_argv[stage_argv.index("--cryosparc-base-port") + 1] == "39000"
-    assert stage_argv[stage_argv.index("--micrographs") + 1] == "J42:micrographs"
+    assert stage_argv[stage_argv.index("--micrographs") + 1] == "J42:split_1"
     assert "--all-micrographs" in stage_argv
     assert "--limit-micrographs" not in stage_argv
     assert "--no-pull" in stage_argv
@@ -899,6 +1229,36 @@ def test_app_state_marks_interrupted_jobs_stale(tmp_path: Path) -> None:
     meta = second.get_job(job_id)
     assert meta["status"] == "unknown"
     assert meta["stale_reason"] == "server_restarted"
+
+
+def test_app_cancel_stops_active_process_group(tmp_path: Path, monkeypatch) -> None:
+    state = AppState(tmp_path)
+    spec = app_server.JobSpec(
+        kind="cancel_test",
+        title="Cancelable run",
+        steps=[
+            app_server.JobStep(
+                "Wait",
+                [sys.executable, "-c", "import time; time.sleep(30)"],
+            )
+        ],
+    )
+    monkeypatch.setattr(state, "build_job_spec", lambda kind, payload: spec)
+
+    job = state.start_job("cancel_test", {})
+    deadline = time.monotonic() + 5
+    while job["id"] not in state.active and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert job["id"] in state.active
+
+    canceled = state.cancel_job(job["id"])
+    assert canceled["cancel_requested"] is True
+    while state.get_job(job["id"])["status"] in {"queued", "running"} and time.monotonic() < deadline:
+        time.sleep(0.01)
+
+    final = state.get_job(job["id"])
+    assert final["status"] == "canceled"
+    assert job["id"] not in state.active
 
 
 def test_app_state_artifacts_prioritize_otf_images_and_hide_dotfiles(tmp_path: Path) -> None:
