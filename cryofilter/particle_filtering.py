@@ -12,6 +12,7 @@ import mrcfile
 import numpy as np
 import yaml
 from scipy import ndimage as ndi
+from scipy.spatial import cKDTree
 
 from utils.file_io import load_cs, save_cs
 from utils.star_import import _find_micrograph_loop, _format_star_value, strip_cryosparc_uid_prefix
@@ -46,7 +47,10 @@ def _load_micrograph_geometry(
     *,
     pixel_size_override_angstrom: Optional[float],
 ) -> tuple[tuple[int, int], float]:
-    with mrcfile.open(path, permissive=True) as mrc:
+    # Filtering only needs the array shape and voxel size. Memory mapping keeps
+    # geometry discovery from reading every full-resolution micrograph over
+    # network storage before mask processing begins.
+    with mrcfile.mmap(path, mode="r", permissive=True) as mrc:
         shape = tuple(int(value) for value in mrc.data.shape)
         try:
             header_pixel_size = float(mrc.voxel_size.x)
@@ -203,6 +207,168 @@ def _distance_for_input_coordinate(
     x_mask = int(np.clip(np.floor(float(x_input_px) * mask_w / max(input_w, 1)), 0, mask_w - 1))
     y_mask = int(np.clip(np.floor(float(y_input_px) * mask_h / max(input_h, 1)), 0, mask_h - 1))
     return float(distance_map[y_mask, x_mask])
+
+
+def _particle_distances_from_mask(
+    *,
+    bad_mask: np.ndarray,
+    x_input_px: np.ndarray,
+    y_input_px: np.ndarray,
+    input_shape: tuple[int, int],
+    pixel_size_angstrom: float,
+) -> np.ndarray:
+    """Return exact distances at particle pixels without a full-image transform."""
+
+    mask = np.asarray(bad_mask, dtype=bool)
+    if mask.ndim != 2:
+        raise ValueError(f"Expected a 2D bad_mask, got shape={mask.shape}")
+
+    x_input = np.asarray(x_input_px, dtype=np.float64).reshape(-1)
+    y_input = np.asarray(y_input_px, dtype=np.float64).reshape(-1)
+    if len(x_input) != len(y_input):
+        raise ValueError("Particle x/y coordinate arrays must have the same length")
+    distances = np.full(len(x_input), np.inf, dtype=np.float32)
+    if len(distances) == 0 or not np.any(mask):
+        return distances
+
+    input_h, input_w = int(input_shape[0]), int(input_shape[1])
+    mask_h, mask_w = int(mask.shape[0]), int(mask.shape[1])
+    x_mask = np.clip(
+        np.floor(x_input * float(mask_w) / float(max(input_w, 1))).astype(np.int64),
+        0,
+        mask_w - 1,
+    )
+    y_mask = np.clip(
+        np.floor(y_input * float(mask_h) / float(max(input_h, 1))).astype(np.int64),
+        0,
+        mask_h - 1,
+    )
+    inside = mask[y_mask, x_mask]
+    distances[inside] = 0.0
+    outside = ~inside
+    if not np.any(outside):
+        return distances
+
+    sampling_y = float(pixel_size_angstrom) * float(input_h) / float(max(mask_h, 1))
+    sampling_x = float(pixel_size_angstrom) * float(input_w) / float(max(mask_w, 1))
+    bad_count = int(np.count_nonzero(mask))
+
+    # Most segmentation masks are sparse, so indexing their bad pixels is much
+    # cheaper than computing and retaining a distance value for every image
+    # pixel. For larger solid regions, only their edge can be nearest to an
+    # outside particle. A dense/checkerboard fallback caps spatial-index memory.
+    sparse_limit = max(1, mask.size // 16)
+    if bad_count <= sparse_limit:
+        nearest_pixels = np.argwhere(mask)
+    else:
+        boundary = np.empty_like(mask)
+        ndi.binary_erosion(
+            mask,
+            structure=np.ones((3, 3), dtype=bool),
+            output=boundary,
+            border_value=0,
+        )
+        np.logical_not(boundary, out=boundary)
+        np.logical_and(mask, boundary, out=boundary)
+        boundary_count = int(np.count_nonzero(boundary))
+        if boundary_count > mask.size // 8:
+            distance_map = ndi.distance_transform_edt(
+                ~mask,
+                sampling=(sampling_y, sampling_x),
+            )
+            distances[outside] = distance_map[y_mask[outside], x_mask[outside]]
+            return distances
+        nearest_pixels = np.argwhere(boundary)
+
+    nearest_coordinates = nearest_pixels.astype(np.float64, copy=False)
+    nearest_coordinates[:, 0] *= sampling_y
+    nearest_coordinates[:, 1] *= sampling_x
+    query_coordinates = np.column_stack(
+        (y_mask[outside] * sampling_y, x_mask[outside] * sampling_x)
+    )
+    tree = cKDTree(nearest_coordinates)
+    distances[outside] = tree.query(query_coordinates, k=1)[0]
+    return distances
+
+
+def _particle_distances_for_source(
+    source: _MaskSource,
+    *,
+    x_input_px: np.ndarray,
+    y_input_px: np.ndarray,
+) -> np.ndarray:
+    mask = np.load(source.mask_path, mmap_mode="r")
+    return _particle_distances_from_mask(
+        bad_mask=mask,
+        x_input_px=x_input_px,
+        y_input_px=y_input_px,
+        input_shape=source.input_shape,
+        pixel_size_angstrom=source.pixel_size_angstrom,
+    )
+
+
+def _resolve_particle_source_ids(
+    raw_names: Iterable[object],
+    *,
+    particle_count: int,
+    sources: Sequence[_MaskSource],
+    aliases: dict[str, _MaskSource],
+    ambiguous_aliases: set[str],
+) -> tuple[np.ndarray, np.ndarray, set[str], int]:
+    """Resolve rows once into compact source IDs for bounded-memory grouping."""
+
+    if len(sources) > np.iinfo(np.int32).max:
+        raise ValueError("Too many micrograph sources to index for particle filtering")
+
+    source_ids = np.full(int(particle_count), -1, dtype=np.int32)
+    matched_counts = np.zeros(len(sources), dtype=np.int64)
+    source_to_id = {source: source_id for source_id, source in enumerate(sources)}
+    resolved_name_cache: dict[str, int] = {}
+    unmatched_names: set[str] = set()
+    unmatched_particles = 0
+
+    rows_seen = 0
+    for idx, raw_name in enumerate(raw_names):
+        rows_seen = idx + 1
+        if isinstance(raw_name, bytes):
+            raw_name = raw_name.decode("utf-8", errors="replace")
+        name = str(raw_name)
+        source_id = resolved_name_cache.get(name)
+        if source_id is None:
+            source = _resolve_source(name, aliases, ambiguous_aliases)
+            source_id = -1 if source is None else source_to_id[source]
+            resolved_name_cache[name] = source_id
+
+        if source_id < 0:
+            unmatched_names.add(name)
+            unmatched_particles += 1
+            continue
+        source_ids[idx] = source_id
+        matched_counts[source_id] += 1
+
+    if rows_seen != int(particle_count):
+        raise ValueError(
+            f"Particle source count mismatch: expected {particle_count} row(s), saw {rows_seen}"
+        )
+    return source_ids, matched_counts, unmatched_names, unmatched_particles
+
+
+def _group_particle_indices_by_source(
+    source_ids: np.ndarray,
+    matched_counts: np.ndarray,
+    unmatched_particles: int,
+) -> Iterable[tuple[int, np.ndarray]]:
+    """Yield particle indices grouped by source while preserving bounded mask memory."""
+
+    order = np.argsort(source_ids, kind="stable")
+    cursor = int(unmatched_particles)
+    for source_id, count_value in enumerate(matched_counts):
+        count = int(count_value)
+        if count == 0:
+            continue
+        next_cursor = cursor + count
+        yield source_id, order[cursor:next_cursor]
+        cursor = next_cursor
 
 
 def _new_counts(sources: Iterable[_MaskSource]) -> dict[Path, dict[str, int]]:
@@ -561,24 +727,13 @@ def classify_particle_coordinates_by_mask(
         return np.ones(len(coords), dtype=bool), distances
 
     input_h, input_w = int(input_shape[0]), int(input_shape[1])
-    mask_h, mask_w = int(mask.shape[0]), int(mask.shape[1])
-    sampling_y = float(pixel_size_angstrom) * float(input_h) / float(max(mask_h, 1))
-    sampling_x = float(pixel_size_angstrom) * float(input_w) / float(max(mask_w, 1))
-    distance_map = ndi.distance_transform_edt(~mask, sampling=(sampling_y, sampling_x)).astype(
-        np.float32,
-        copy=False,
+    distances = _particle_distances_from_mask(
+        bad_mask=mask,
+        x_input_px=coords[:, 0],
+        y_input_px=coords[:, 1],
+        input_shape=(input_h, input_w),
+        pixel_size_angstrom=float(pixel_size_angstrom),
     )
-    x_mask = np.clip(
-        np.floor(coords[:, 0] * float(mask_w) / float(max(input_w, 1))).astype(np.int64),
-        0,
-        mask_w - 1,
-    )
-    y_mask = np.clip(
-        np.floor(coords[:, 1] * float(mask_h) / float(max(input_h, 1))).astype(np.int64),
-        0,
-        mask_h - 1,
-    )
-    distances = np.asarray(distance_map[y_mask, x_mask], dtype=np.float32)
     keep = distances > float(exclusion_distance_angstrom)
     return keep.astype(bool, copy=False), distances
 
@@ -627,41 +782,13 @@ def _filter_cs(
 
     particles = _load(location_source_path)
 
-    counts = _new_counts(sources)
-    keep = np.ones(len(particles), dtype=bool)
-    distance_maps: dict[Path, np.ndarray] = {}
-    unmatched_names: set[str] = set()
-    unmatched_particles = 0
-
-    for idx, particle in enumerate(particles):
-        raw_name = particle["location/micrograph_path"]
-        if isinstance(raw_name, bytes):
-            raw_name = raw_name.decode("utf-8", errors="replace")
-        raw_name = str(raw_name)
-        source = _resolve_source(raw_name, aliases, ambiguous_aliases)
-        if source is None:
-            unmatched_names.add(raw_name)
-            unmatched_particles += 1
-            continue
-
-        counts[source.micrograph_path]["particles"] += 1
-        input_h, input_w = source.input_shape
-        x_input = float(particle["location/center_x_frac"]) * float(input_w)
-        y_input = float(particle["location/center_y_frac"]) * float(input_h)
-        distance_map = distance_maps.get(source.mask_path)
-        if distance_map is None:
-            distance_map = _distance_map_angstrom(source)
-            distance_maps[source.mask_path] = distance_map
-        distance = _distance_for_input_coordinate(
-            distance_map,
-            x_input_px=x_input,
-            y_input_px=y_input,
-            input_shape=source.input_shape,
-        )
-        remove = distance <= float(exclusion_distance_angstrom)
-        keep[idx] = not remove
-        counts[source.micrograph_path]["removed" if remove else "kept"] += 1
-
+    source_ids, matched_counts, unmatched_names, unmatched_particles = _resolve_particle_source_ids(
+        particles["location/micrograph_path"],
+        particle_count=len(particles),
+        sources=sources,
+        aliases=aliases,
+        ambiguous_aliases=ambiguous_aliases,
+    )
     if unmatched_particles and not allow_unmatched:
         examples = ", ".join(sorted(unmatched_names)[:5])
         raise ValueError(
@@ -669,6 +796,37 @@ def _filter_cs(
             f"({examples}). Include those micrographs or pass --allow-unmatched-particles "
             "to preserve unmatched particles unchanged."
         )
+
+    counts = _new_counts(sources)
+    keep = np.ones(len(particles), dtype=bool)
+    for source_id, particle_indices in _group_particle_indices_by_source(
+        source_ids,
+        matched_counts,
+        unmatched_particles,
+    ):
+        source = sources[source_id]
+        particle_count = len(particle_indices)
+        counts[source.micrograph_path]["particles"] = particle_count
+        input_h, input_w = source.input_shape
+        x_input = np.asarray(
+            particles["location/center_x_frac"][particle_indices],
+            dtype=np.float64,
+        ) * float(input_w)
+        y_input = np.asarray(
+            particles["location/center_y_frac"][particle_indices],
+            dtype=np.float64,
+        ) * float(input_h)
+        distances = _particle_distances_for_source(
+            source,
+            x_input_px=x_input,
+            y_input_px=y_input,
+        )
+        remove = distances <= float(exclusion_distance_angstrom)
+        keep[particle_indices] = ~remove
+        removed_count = int(np.count_nonzero(remove))
+        counts[source.micrograph_path]["removed"] = removed_count
+        counts[source.micrograph_path]["kept"] = particle_count - removed_count
+        del distances, x_input, y_input, remove
 
     kept_uids: Optional[np.ndarray] = None
     if particles.dtype.names and "uid" in particles.dtype.names:
@@ -758,40 +916,13 @@ def _filter_star(
     mic_idx = lower_columns["_rlnmicrographname"]
     x_idx = lower_columns["_rlncoordinatex"]
     y_idx = lower_columns["_rlncoordinatey"]
-    counts = _new_counts(sources)
-    distance_maps: dict[Path, np.ndarray] = {}
-    keep_rows: list[list[str]] = []
-    removed = 0
-    unmatched_names: set[str] = set()
-    unmatched_particles = 0
-
-    for row in loop.rows:
-        raw_name = str(row[mic_idx])
-        source = _resolve_source(raw_name, aliases, ambiguous_aliases)
-        if source is None:
-            unmatched_names.add(raw_name)
-            unmatched_particles += 1
-            keep_rows.append(row)
-            continue
-
-        counts[source.micrograph_path]["particles"] += 1
-        distance_map = distance_maps.get(source.mask_path)
-        if distance_map is None:
-            distance_map = _distance_map_angstrom(source)
-            distance_maps[source.mask_path] = distance_map
-        distance = _distance_for_input_coordinate(
-            distance_map,
-            x_input_px=float(row[x_idx]) - 1.0,
-            y_input_px=float(row[y_idx]) - 1.0,
-            input_shape=source.input_shape,
-        )
-        remove = distance <= float(exclusion_distance_angstrom)
-        counts[source.micrograph_path]["removed" if remove else "kept"] += 1
-        if remove:
-            removed += 1
-        else:
-            keep_rows.append(row)
-
+    source_ids, matched_counts, unmatched_names, unmatched_particles = _resolve_particle_source_ids(
+        (row[mic_idx] for row in loop.rows),
+        particle_count=len(loop.rows),
+        sources=sources,
+        aliases=aliases,
+        ambiguous_aliases=ambiguous_aliases,
+    )
     if unmatched_particles and not allow_unmatched:
         examples = ", ".join(sorted(unmatched_names)[:5])
         raise ValueError(
@@ -799,6 +930,41 @@ def _filter_star(
             f"({examples}). Include those micrographs or pass --allow-unmatched-particles "
             "to preserve unmatched particles unchanged."
         )
+
+    counts = _new_counts(sources)
+    keep = np.ones(len(loop.rows), dtype=bool)
+    for source_id, particle_indices in _group_particle_indices_by_source(
+        source_ids,
+        matched_counts,
+        unmatched_particles,
+    ):
+        source = sources[source_id]
+        particle_count = len(particle_indices)
+        counts[source.micrograph_path]["particles"] = particle_count
+        x_input = np.fromiter(
+            (float(loop.rows[int(idx)][x_idx]) - 1.0 for idx in particle_indices),
+            dtype=np.float64,
+            count=particle_count,
+        )
+        y_input = np.fromiter(
+            (float(loop.rows[int(idx)][y_idx]) - 1.0 for idx in particle_indices),
+            dtype=np.float64,
+            count=particle_count,
+        )
+        distances = _particle_distances_for_source(
+            source,
+            x_input_px=x_input,
+            y_input_px=y_input,
+        )
+        remove = distances <= float(exclusion_distance_angstrom)
+        keep[particle_indices] = ~remove
+        removed_count = int(np.count_nonzero(remove))
+        counts[source.micrograph_path]["removed"] = removed_count
+        counts[source.micrograph_path]["kept"] = particle_count - removed_count
+        del distances, x_input, y_input, remove
+
+    keep_rows = [row for idx, row in enumerate(loop.rows) if keep[idx]]
+    removed = int(np.count_nonzero(~keep))
 
     row_lines = [" ".join(_format_star_value(token) for token in row) + "\n" for row in keep_rows]
     new_lines = loop.lines[: loop.data_start_idx] + row_lines + loop.lines[loop.data_end_idx :]
