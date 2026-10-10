@@ -52,11 +52,11 @@ install the latest available Tools package:
 python -m pip install -e ".[cryosparc-bridge]"
 ```
 
-Download **both weight files** from [Zenodo record 22700873](https://zenodo.org/records/22700873) and keep their filenames unchanged. Place them in `pretrained_models/` inside your cryoFILTER checkout:
+Download the recommended tuned segmentation weights and subtype classifier from [Zenodo record 23286511](https://zenodo.org/records/23286511) and place them in `pretrained_models/` inside your cryoFILTER checkout:
 
 | File | Purpose | Default location |
 |---|---|---|
-| `cryoFILTER_FULL.pt` (688 MB) | Binary contamination segmentation, including the additional membrane training images | `pretrained_models/cryoFILTER_FULL.pt` |
+| `cryoFILTER_FULL_v1_1.pt` (688 MB) | Recommended tuned binary contamination segmentation | `pretrained_models/cryoFILTER_FULL.pt` |
 | `classifier.pt` (229 MB) | Publication contamination subtype classifier | `pretrained_models/classifier.pt` |
 
 From the checkout directory, you can download them directly without Git LFS:
@@ -64,10 +64,10 @@ From the checkout directory, you can download them directly without Git LFS:
 ```bash
 mkdir -p pretrained_models &&
 curl --fail --location --retry 3 \
-  'https://zenodo.org/records/22700873/files/cryoFILTER_FULL.pt?download=1' \
+  'https://zenodo.org/records/23286511/files/cryoFILTER_FULL_v1_1.pt?download=1' \
   --output pretrained_models/cryoFILTER_FULL.pt &&
 curl --fail --location --retry 3 \
-  'https://zenodo.org/records/22700873/files/classifier.pt?download=1' \
+  'https://zenodo.org/records/23286511/files/classifier.pt?download=1' \
   --output pretrained_models/classifier.pt
 ```
 
