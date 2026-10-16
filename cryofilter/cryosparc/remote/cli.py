@@ -156,7 +156,7 @@ def add_subparser(subparsers: argparse._SubParsersAction) -> None:
         "--max-transfer-gb",
         type=float,
         default=25.0,
-        help="Abort before pulling if staged micrographs exceed this many GiB.",
+        help="Automatically select as many micrographs as fit within this many GiB.",
     )
     stage.add_argument("--no-pull", action="store_true", help="Create the remote manifest but skip rsync pull.")
     stage.add_argument(
@@ -232,7 +232,7 @@ def add_subparser(subparsers: argparse._SubParsersAction) -> None:
         "--max-transfer-gb",
         type=float,
         default=25.0,
-        help="Abort before pulling if staged micrographs exceed this many GiB.",
+        help="Automatically select as many micrographs as fit within this many GiB.",
     )
     predict.add_argument(
         "--particle-exclusion-distance-angstrom",
@@ -858,6 +858,7 @@ def _run_stage_test(args: argparse.Namespace, config: CryoSPARCIntegrationConfig
         raise ValueError("--particle-star cannot be used with --no-pull")
     if float(args.max_transfer_gb) <= 0:
         raise ValueError("--max-transfer-gb must be positive")
+    max_transfer_bytes = int(float(args.max_transfer_gb) * 1024**3)
     run_id = str(UUID(args.run_id)) if args.run_id else str(uuid4())
     local_run_dir = _local_run_root(config, args.local_run_root) / run_id
     if local_run_dir.exists():
@@ -884,6 +885,8 @@ def _run_stage_test(args: argparse.Namespace, config: CryoSPARCIntegrationConfig
     ]
     if limit_micrographs is not None:
         bridge_args.extend(["--limit-micrographs", str(limit_micrographs)])
+    if not args.no_pull:
+        bridge_args.extend(["--max-transfer-bytes", str(max_transfer_bytes)])
     if particles_ref:
         bridge_args.extend(["--particles", particles_ref])
     if args.micrograph_path_field:
@@ -916,7 +919,7 @@ def _run_stage_test(args: argparse.Namespace, config: CryoSPARCIntegrationConfig
         transport.pull(str(payload["manifest_file"]), local_manifest_file, timeout=args.timeout)
 
         total_bytes = int(payload.get("total_micrograph_bytes") or 0)
-        max_bytes = int(float(args.max_transfer_gb) * 1024**3)
+        max_bytes = max_transfer_bytes
         payload["max_transfer_bytes"] = max_bytes
         if args.no_pull:
             payload["transfer_skipped"] = True
@@ -2206,6 +2209,7 @@ def _run_predict(args: argparse.Namespace, config: CryoSPARCIntegrationConfig) -
         raise ValueError("--threshold must be between 0 and 1")
     if float(args.max_transfer_gb) <= 0:
         raise ValueError("--max-transfer-gb must be positive")
+    max_transfer_bytes = int(float(args.max_transfer_gb) * 1024**3)
     if float(args.particle_exclusion_distance_angstrom) < 0:
         raise ValueError("--particle-exclusion-distance-angstrom must be >= 0")
     _validate_typing_options(args)
@@ -2270,6 +2274,7 @@ def _run_predict(args: argparse.Namespace, config: CryoSPARCIntegrationConfig) -
         ]
         if args.limit_micrographs is not None:
             bridge_args.extend(["--limit-micrographs", str(int(args.limit_micrographs))])
+        bridge_args.extend(["--max-transfer-bytes", str(max_transfer_bytes)])
         if args.micrograph_path_field:
             bridge_args.extend(["--micrograph-path-field", str(args.micrograph_path_field)])
 
@@ -2285,6 +2290,16 @@ def _run_predict(args: argparse.Namespace, config: CryoSPARCIntegrationConfig) -
             return 1
         if not prepare_payload.get("external_job_uid"):
             raise ValueError("Remote prepare did not create an External Job")
+        if prepare_payload.get("transfer_budget_limited"):
+            selected = int(prepare_payload.get("n_micrographs") or 0)
+            available = int(prepare_payload.get("n_micrographs_total") or 0)
+            selected_gib = float(prepare_payload.get("total_micrograph_bytes") or 0) / 1024**3
+            print(
+                "Transfer budget applied: selected "
+                f"{selected}/{available} micrographs ({selected_gib:.2f} GiB) within "
+                f"--max-transfer-gb={args.max_transfer_gb}.",
+                flush=True,
+            )
 
         local_manifest_file = local_run_dir / "transfer_manifest.json"
         local_transfer_dir = local_run_dir / "transfer"
@@ -2307,7 +2322,7 @@ def _run_predict(args: argparse.Namespace, config: CryoSPARCIntegrationConfig) -
         transport.pull(str(prepare_payload["manifest_file"]), local_manifest_file, timeout=args.timeout)
 
         total_bytes = int(prepare_payload.get("total_micrograph_bytes") or 0)
-        max_bytes = int(float(args.max_transfer_gb) * 1024**3)
+        max_bytes = max_transfer_bytes
         payload["max_transfer_bytes"] = max_bytes
         if total_bytes > max_bytes:
             raise ValueError(

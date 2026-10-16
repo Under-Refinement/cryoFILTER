@@ -371,17 +371,22 @@ def _stage_micrographs(
     dataset: object,
     request: PredictPrepareRequest,
     transfer_dir: Path,
-) -> list[MicrographManifestEntry]:
+) -> tuple[list[MicrographManifestEntry], int]:
     fields = _dataset_fields(dataset)
     path_fields = _candidate_path_fields(fields, request.micrograph_path_field)
     total = len(dataset)  # type: ignore[arg-type]
-    limit = total if request.limit_micrographs is None else min(total, request.limit_micrographs)
+    selection_limit = total if request.limit_micrographs is None else min(total, request.limit_micrographs)
+    transfer_budget = request.max_transfer_bytes
     micrograph_dir = transfer_dir / "micrographs"
     if request.stage_micrographs:
         micrograph_dir.mkdir(parents=True, exist_ok=True)
 
     entries: list[MicrographManifestEntry] = []
-    for index in range(limit):
+    selected_bytes = 0
+    skipped_for_budget = 0
+    for index in range(total):
+        if len(entries) >= selection_limit:
+            break
         uid = int(_value_at(dataset, "uid", index))
         source_path: Path | None = None
         relative_path: str | None = None
@@ -409,6 +414,11 @@ def _stage_micrographs(
                 f"(uid {uid}). Tried: {attempted_text}"
             )
 
+        file_size = int(source_path.stat().st_size)
+        if transfer_budget is not None and selected_bytes + file_size > transfer_budget:
+            skipped_for_budget += 1
+            continue
+
         blob_prefix = _prefix_for_field(path_field)
         shape_field = _field_for_suffixes(fields, blob_prefix, MICROGRAPH_SHAPE_SUFFIXES)
         psize_field = _field_for_suffixes(fields, blob_prefix, MICROGRAPH_PIXEL_SIZE_SUFFIXES)
@@ -425,7 +435,6 @@ def _stage_micrographs(
                 raise FileExistsError(f"Refusing to overwrite existing staged path: {staged_path}")
             staged_path.symlink_to(source_path)
             remote_transfer_path = str(staged_path)
-        file_size = int(source_path.stat().st_size)
         entries.append(
             MicrographManifestEntry(
                 uid=uid,
@@ -440,7 +449,16 @@ def _stage_micrographs(
                 file_size_bytes=file_size,
             )
         )
-    return entries
+        selected_bytes += file_size
+
+    if selection_limit > 0 and not entries:
+        if transfer_budget is not None:
+            raise ValueError(
+                "No micrograph fits within the transfer budget of "
+                f"{transfer_budget} bytes; increase --max-transfer-gb or choose a smaller input"
+            )
+        raise ValueError("No micrographs were selected for staging")
+    return entries, skipped_for_budget
 
 
 def _stage_particles(
@@ -521,7 +539,7 @@ def run_prepare(
     if remote_run_dir.exists():
         raise FileExistsError(f"Refusing to overwrite existing remote run directory: {remote_run_dir}")
     transfer_dir.mkdir(parents=True, exist_ok=True)
-    micrograph_entries = _stage_micrographs(
+    micrograph_entries, skipped_for_budget = _stage_micrographs(
         project_dir=project_dir,
         dataset=micrographs,
         request=request,
@@ -608,6 +626,9 @@ def run_prepare(
         total_micrograph_bytes=sum(
             int(entry.file_size_bytes or 0) for entry in micrograph_entries
         ),
+        max_transfer_bytes=request.max_transfer_bytes,
+        micrographs_skipped_for_transfer_budget=skipped_for_budget,
+        transfer_budget_limited=skipped_for_budget > 0,
         errors=[],
     )
 

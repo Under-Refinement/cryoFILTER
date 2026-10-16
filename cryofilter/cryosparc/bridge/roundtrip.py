@@ -9,7 +9,6 @@ from cryofilter.cryosparc.bridge.compat import (
     add_particle_output,
     connect_particle_input,
     create_external_job,
-    dataset_filter_prefixes,
     dataset_prefixes,
     dataset_take,
     dataset_uids,
@@ -70,9 +69,11 @@ def run_particle_roundtrip(
         slots = dataset_prefixes(particles)
         if not slots:
             raise ValueError("Could not determine output slots from particle dataset")
-        output_slots = ["location"] if "location" in slots else [slots[0]]
-        output_particles_a = dataset_filter_prefixes(particles_a, output_slots)
-        output_particles_b = dataset_filter_prefixes(particles_b, output_slots)
+        # Publish self-contained metadata subsets. This avoids version-specific
+        # passthrough validation failures such as a zero-row pick_stats result.
+        output_slots = slots
+        output_particles_a = particles_a
+        output_particles_b = particles_b
 
         title = f"{request.title} ({request.run_id})"
         external_job = create_external_job(
@@ -95,18 +96,16 @@ def run_particle_roundtrip(
         add_particle_output(
             external_job,
             name="particles_a",
-            passthrough="input_particles",
+            passthrough=None,
             slots=output_slots,
             title="cryoFILTER round-trip particles A",
-            alloc=particles_a,
         )
         add_particle_output(
             external_job,
             name="particles_b",
-            passthrough="input_particles",
+            passthrough=None,
             slots=output_slots,
             title="cryoFILTER round-trip particles B",
-            alloc=particles_b,
         )
 
         with run_external_job(external_job):

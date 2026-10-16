@@ -178,29 +178,32 @@ def add_particle_output(
     name: str,
     slots: Iterable[str],
     title: str,
-    passthrough: str = "input_particles",
+    passthrough: str | None = "input_particles",
     alloc: object | None = None,
 ) -> object:
     add_output = getattr(external_job, "add_output")
     slot_list = list(slots)
+    kwargs = {
+        "passthrough": passthrough,
+        "slots": slot_list,
+        "title": title,
+        "alloc": alloc,
+    }
+    # Omitting unset optional arguments is more compatible with older
+    # cryosparc-tools releases than serializing explicit null values.
+    kwargs = {key: value for key, value in kwargs.items() if value is not None}
     try:
         return add_output(
             type="particle",
             name=name,
-            passthrough=passthrough,
-            slots=slot_list,
-            title=title,
-            alloc=alloc,
+            **kwargs,
         )
     except TypeError:
         try:
             return add_output(
                 "particle",
                 name,
-                passthrough=passthrough,
-                slots=slot_list,
-                title=title,
-                alloc=alloc,
+                **kwargs,
             )
         except TypeError:
             return add_output("particle", name, slot_list, title)

@@ -7,6 +7,8 @@ import pytest
 
 pytest.importorskip("pydantic")
 
+from cryofilter.cryosparc.bridge.cli import _build_parser as _build_bridge_parser
+from cryofilter.cryosparc.bridge.cli import _prepare_request_from_args
 from cryofilter.cryosparc.protocol.models import (
     FinalizePredictionRequest,
     PredictPrepareRequest,
@@ -130,6 +132,26 @@ def test_prepare_manifest_allows_manifest_only_staging() -> None:
     assert not request.create_external_job
     assert manifest.external_job_uid is None
     assert manifest.micrographs[0].transfer_filename.endswith(".mrc")
+
+
+def test_bridge_prepare_accepts_exact_transfer_budget_bytes() -> None:
+    args = _build_bridge_parser().parse_args(
+        [
+            "prepare",
+            "--project",
+            "P1",
+            "--workspace",
+            "W2",
+            "--micrographs",
+            "J3:micrographs",
+            "--max-transfer-bytes",
+            "26843545600",
+        ]
+    )
+
+    request = _prepare_request_from_args(args)
+
+    assert request.max_transfer_bytes == 25 * 1024**3
 
 
 def test_finalize_prediction_contracts_reference_remote_result_files() -> None:

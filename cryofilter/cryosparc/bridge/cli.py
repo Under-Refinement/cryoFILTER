@@ -116,6 +116,12 @@ def _build_parser() -> argparse.ArgumentParser:
     prepare.add_argument("--remote-work-root", default="~/cryofilter_bridge_work", help="Remote staging root.")
     prepare.add_argument("--title", default="cryoFILTER prediction", help="External Job title prefix.")
     prepare.add_argument("--limit-micrographs", type=int, default=None, help="Stage at most this many micrographs.")
+    prepare.add_argument(
+        "--max-transfer-bytes",
+        type=int,
+        default=None,
+        help="Select only micrographs whose cumulative source size fits this transfer budget.",
+    )
     prepare.add_argument("--micrograph-path-field", default=None, help="Override the dataset field containing micrograph paths.")
     prepare.add_argument(
         "--no-stage-micrographs",
@@ -214,6 +220,7 @@ def _prepare_request_from_args(args: argparse.Namespace) -> PredictPrepareReques
         remote_work_root=str(args.remote_work_root),
         title=str(args.title),
         limit_micrographs=args.limit_micrographs,
+        max_transfer_bytes=args.max_transfer_bytes,
         micrograph_path_field=args.micrograph_path_field,
         create_external_job=not bool(args.no_create_external_job),
         stage_micrographs=not bool(args.no_stage_micrographs),

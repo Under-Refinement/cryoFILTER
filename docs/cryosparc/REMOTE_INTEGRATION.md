@@ -100,8 +100,11 @@ cryofilter cryosparc --config /path/to/cryosparc.toml stage-test \
 ```
 
 `stage-test` is manifest-only by default on the CryoSPARC side, so it does not
-create a scratch External Job unless `--create-external-job` is passed. It also
-checks the staged byte count before pulling and aborts above `--max-transfer-gb`.
+create a scratch External Job unless `--create-external-job` is passed. For a
+real transfer, `--max-transfer-gb` is sent to the bridge before staging; the
+bridge deterministically selects as many micrographs as fit and filters the
+particle manifest to that same subset. The selected byte count cannot exceed
+the configured transfer budget.
 
 Run cryoFILTER against CryoSPARC inputs and finalize the prepared External Job:
 
@@ -122,6 +125,11 @@ STAR coordinate adapter for cryoFILTER overlays, runs `cryofilter infer`, runs
 contamination typing by default, builds diagnostic PNGs, pushes UID split
 manifests and diagnostics back to the bridge, then saves `particles_accepted`
 and `particles_rejected` outputs on the prepared CryoSPARC External Job.
+
+`--max-transfer-gb` limits the micrograph files copied and stored for one run;
+it is not a RAM limit. When the complete CryoSPARC input is larger, the run
+processes a deterministic source-order subset that fits and reports the
+selected and available micrograph counts in its prepare payload.
 
 Typing writes a contamination-typing manifest from the staged micrographs and
 final binary masks, runs `cryofilter type`, uploads compact typing JSON/CSV

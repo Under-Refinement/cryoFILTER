@@ -301,6 +301,11 @@ Useful `predict` flags:
 
 Arguments after `--` are forwarded to `cryofilter infer`.
 
+`--max-transfer-gb` is a transfer/disk budget rather than a RAM limit. The
+CryoSPARC bridge selects a deterministic micrograph subset whose cumulative
+source-file size does not exceed the budget, and the corresponding particle
+manifest is restricted to the same micrographs.
+
 ## Full-Micrograph Fine-Tuning Script
 
 The app Fine-tune tab wraps:

@@ -247,6 +247,135 @@ def test_prepare_can_write_manifest_without_staging_symlinks(
     assert not (Path(response.transfer_dir) / "micrographs" / "7_micrograph_001.mrc").exists()
 
 
+def test_prepare_selects_micrographs_and_particles_within_transfer_budget(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    for name, size in (("mic_1.mrc", 6), ("mic_2.mrc", 6), ("mic_3.mrc", 4)):
+        (project_dir / name).write_bytes(b"x" * size)
+    micrographs = _FakeDataset(
+        [
+            {
+                "uid": uid,
+                "micrograph_blob/path": name,
+                "micrograph_blob/shape": (100, 200),
+                "micrograph_blob/psize_A": 1.2,
+            }
+            for uid, name in ((1, "mic_1.mrc"), (2, "mic_2.mrc"), (3, "mic_3.mrc"))
+        ]
+    )
+    particles = _FakeDataset(
+        [
+            {
+                "uid": 100 + uid,
+                "location/micrograph_uid": uid,
+                "location/center_x_frac": 0.25,
+                "location/center_y_frac": 0.5,
+            }
+            for uid in (1, 2, 3)
+        ]
+    )
+    project = _FakeProject(
+        project_dir,
+        {
+            "J3": _FakeJob({"micrographs": micrographs}),
+            "J4": _FakeJob({"particles": particles}),
+        },
+    )
+    monkeypatch.setattr(
+        prepare_bridge,
+        "make_client",
+        lambda connection_file=None: _FakeClient(project),
+    )
+    request = PredictPrepareRequest.model_validate(
+        {
+            "run_id": "00000000-0000-0000-0000-000000000323",
+            "project_uid": "P1",
+            "workspace_uid": "W2",
+            "micrographs": {
+                "project_uid": "P1",
+                "job_uid": "J3",
+                "output_name": "micrographs",
+            },
+            "particles": {
+                "project_uid": "P1",
+                "job_uid": "J4",
+                "output_name": "particles",
+            },
+            "model_id": "budget-test",
+            "threshold": 0.6,
+            "remote_work_root": str(tmp_path / "remote"),
+            "max_transfer_bytes": 10,
+            "create_external_job": False,
+        }
+    )
+
+    response = prepare_bridge.run_prepare(request)
+    transfer = TransferManifest.model_validate_json(
+        Path(response.manifest_file).read_text(encoding="utf-8")
+    )
+
+    assert response.ok
+    assert response.total_micrograph_bytes == 10
+    assert response.total_micrograph_bytes <= response.max_transfer_bytes
+    assert response.n_micrographs == 2
+    assert response.n_micrographs_total == 3
+    assert response.micrographs_skipped_for_transfer_budget == 1
+    assert response.transfer_budget_limited
+    assert [entry.uid for entry in transfer.micrographs] == [1, 3]
+    assert [entry.micrograph_uid for entry in transfer.particles] == [1, 3]
+    assert (Path(response.transfer_dir) / "micrographs" / "1_mic_1.mrc").is_symlink()
+    assert not (Path(response.transfer_dir) / "micrographs" / "2_mic_2.mrc").exists()
+    assert (Path(response.transfer_dir) / "micrographs" / "3_mic_3.mrc").is_symlink()
+
+
+def test_prepare_rejects_budget_smaller_than_every_micrograph(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    (project_dir / "micrograph.mrc").write_bytes(b"too-large")
+    micrographs = _FakeDataset(
+        [
+            {
+                "uid": 1,
+                "micrograph_blob/path": "micrograph.mrc",
+                "micrograph_blob/shape": (100, 200),
+                "micrograph_blob/psize_A": 1.2,
+            }
+        ]
+    )
+    project = _FakeProject(project_dir, {"J3": _FakeJob({"micrographs": micrographs})})
+    monkeypatch.setattr(
+        prepare_bridge,
+        "make_client",
+        lambda connection_file=None: _FakeClient(project),
+    )
+    request = PredictPrepareRequest.model_validate(
+        {
+            "run_id": "00000000-0000-0000-0000-000000000324",
+            "project_uid": "P1",
+            "workspace_uid": "W2",
+            "micrographs": {
+                "project_uid": "P1",
+                "job_uid": "J3",
+                "output_name": "micrographs",
+            },
+            "model_id": "budget-test",
+            "threshold": 0.6,
+            "remote_work_root": str(tmp_path / "remote"),
+            "max_transfer_bytes": 1,
+            "create_external_job": False,
+        }
+    )
+
+    with pytest.raises(ValueError, match="No micrograph fits within the transfer budget"):
+        prepare_bridge.run_prepare(request)
+
+
 def test_read_only_prepare_uses_direct_job_lookup_without_project_owner_access(
     monkeypatch,
     tmp_path: Path,

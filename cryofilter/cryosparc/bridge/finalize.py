@@ -11,7 +11,6 @@ import numpy as np
 from cryofilter.cryosparc.bridge.client import make_client
 from cryofilter.cryosparc.bridge.compat import (
     add_particle_output,
-    dataset_filter_prefixes,
     dataset_prefixes,
     dataset_take,
     dataset_uids,
@@ -238,26 +237,32 @@ def finalize_prediction(
         slots = dataset_prefixes(source_particles)
         if not slots:
             raise ValueError("Could not determine output slots from particle dataset")
-        output_slots = ["location"] if "location" in slots else [slots[0]]
-        output_accepted = dataset_filter_prefixes(accepted_particles, output_slots)
-        output_rejected = dataset_filter_prefixes(rejected_particles, output_slots)
+        # Write every particle metadata slot explicitly. Earlier releases wrote
+        # only ``location`` and relied on CryoSPARC passthrough results for CTF,
+        # pick_stats, blob metadata, and alignments. Some CryoSPARC versions can
+        # create the subset output and then fail its final validation because a
+        # passthrough result is reported with zero rows (most often pick_stats).
+        # The loaded source dataset already contains the joined metadata, so a
+        # self-contained subset gives every result the same UID partition and
+        # row count without copying the particle image data themselves.
+        output_slots = slots
+        output_accepted = accepted_particles
+        output_rejected = rejected_particles
 
         external_job = find_external_job(client, project, request.project_uid, request.job_uid)
         add_particle_output(
             external_job,
             name="particles_accepted",
-            passthrough="input_particles",
+            passthrough=None,
             slots=output_slots,
             title="cryoFILTER accepted particles",
-            alloc=accepted_particles,
         )
         add_particle_output(
             external_job,
             name="particles_rejected",
-            passthrough="input_particles",
+            passthrough=None,
             slots=output_slots,
             title="cryoFILTER rejected particles",
-            alloc=rejected_particles,
         )
 
         diagnostics_manifest_file = _optional_file(result, DIAGNOSTICS_KEYS)

@@ -634,6 +634,7 @@ def test_stage_test_uses_generic_prepare_and_manifest_only_by_default(
     assert run_call[0] == "run"
     assert "--remote-work-root" in run_call[1]
     assert "/remote/work" in run_call[1]
+    assert run_call[1][run_call[1].index("--max-transfer-bytes") + 1] == str(1024**3)
     assert "--no-create-external-job" in run_call[1]
     assert calls[2][1][0] == "/remote/run/transfer/"
     assert calls[2][2]["dereference"] is True
@@ -1788,6 +1789,7 @@ def test_predict_orchestrates_prepare_infer_push_and_finalize(
     assert "--no-create-external-job" not in prepare_call[1]
     assert prepare_call[1][prepare_call[1].index("--micrographs") + 1] == "J3:micrographs"
     assert prepare_call[1][prepare_call[1].index("--particles") + 1] == "J4:particles"
+    assert prepare_call[1][prepare_call[1].index("--max-transfer-bytes") + 1] == str(1024**3)
     assert ("pull", ("/remote/run/transfer/", tmp_path / "runs" / run_id / "transfer"), {"timeout": 30.0, "dereference": True, "check": True}) in calls
     finalize_call = next(call for call in calls if call[0] == "run" and "finalize-prediction" in call[1])
     assert "/remote/run/results/result_manifest.json" in finalize_call[1]

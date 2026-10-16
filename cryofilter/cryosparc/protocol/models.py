@@ -111,6 +111,7 @@ class PredictPrepareRequest(ProtocolModel):
     remote_work_root: str = Field(min_length=1)
     title: str = "cryoFILTER prediction"
     limit_micrographs: int | None = Field(default=None, ge=1)
+    max_transfer_bytes: int | None = Field(default=None, ge=1)
     micrograph_path_field: str | None = Field(default=None, min_length=1)
     create_external_job: bool = True
     stage_micrographs: bool = True
@@ -129,6 +130,9 @@ class PredictPrepareResponse(ProtocolModel):
     n_micrographs_total: int = Field(ge=0)
     n_particles: int | None = Field(default=None, ge=0)
     total_micrograph_bytes: int = Field(default=0, ge=0)
+    max_transfer_bytes: int | None = Field(default=None, ge=1)
+    micrographs_skipped_for_transfer_budget: int = Field(default=0, ge=0)
+    transfer_budget_limited: bool = False
     errors: list[str] = Field(default_factory=list)
 
 
