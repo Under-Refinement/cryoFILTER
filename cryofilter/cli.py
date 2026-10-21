@@ -428,7 +428,11 @@ def _save_mrc(path: Path, array: np.ndarray, voxel_size_angstrom: Optional[float
     import mrcfile
 
     with mrcfile.new(path, overwrite=True) as mrc:
-        mrc.set_data(array.astype(np.float32, copy=False))
+        # Preserve compact, MRC-compatible storage dtypes. Inference performs
+        # thresholding and post-processing in float32 before this export step,
+        # so using float16 for probabilities and int8 for binary masks changes
+        # storage precision only, not the generated mask.
+        mrc.set_data(np.ascontiguousarray(array))
         if voxel_size_angstrom is not None and voxel_size_angstrom > 0:
             mrc.voxel_size = voxel_size_angstrom
 
@@ -1311,6 +1315,7 @@ def _run_infer(
         else output_dir / "diagnostic_images"
     )
     export_mask_outputs = bool(getattr(args, "export_masks", True))
+    probability_output_dtype = np.dtype(str(getattr(args, "probability_dtype", "float16")))
     force_disk_map_outputs = bool(getattr(args, "force_disk_mask_outputs", False))
     needs_disk_map_outputs = bool(
         export_mask_outputs or args.particle_file or force_disk_map_outputs
@@ -1613,6 +1618,10 @@ def _run_infer(
         "no_resample_or_gen": bool(args.no_resample_or_gen),
         "export_masks": bool(export_mask_outputs),
         "mask_outputs_exported": bool(export_mask_outputs),
+        "probability_output_dtype": probability_output_dtype.name,
+        "mask_output_dtype": "uint8",
+        "probability_mrc_dtype": probability_output_dtype.name,
+        "mask_mrc_dtype": "int8",
         "mask_output_dir": (
             str(map_output_dir)
             if needs_disk_map_outputs and not bool(args.no_resample_or_gen)
@@ -1870,17 +1879,27 @@ def _run_infer(
                     from cryofilter.cryosparc.otf_state import save_mask
 
                     preview_stride = max(1, int(np.ceil(max(prob_map.shape) / 1024)))
-                    _save_npy_atomic(prob_npy, prob_map[::preview_stride, ::preview_stride].astype(np.float16))
+                    _save_npy_atomic(
+                        prob_npy,
+                        prob_map[::preview_stride, ::preview_stride].astype(
+                            probability_output_dtype,
+                            copy=False,
+                        ),
+                    )
                     save_mask(mask_npy, mask)
                 else:
-                    np.save(prob_npy, prob_map)
-                    np.save(mask_npy, mask)
+                    np.save(prob_npy, prob_map.astype(probability_output_dtype, copy=False))
+                    np.save(mask_npy, mask.astype(np.uint8, copy=False))
                 prob_npy_path = str(prob_npy)
                 mask_npy_path = str(mask_npy)
 
             if save_mrc_outputs:
-                _save_mrc(prob_mrc, prob_map, output_pixel_size)
-                _save_mrc(mask_mrc, mask.astype(np.float32, copy=False), output_pixel_size)
+                _save_mrc(
+                    prob_mrc,
+                    prob_map.astype(probability_output_dtype, copy=False),
+                    output_pixel_size,
+                )
+                _save_mrc(mask_mrc, mask.astype(np.int8, copy=False), output_pixel_size)
                 prob_mrc_path = str(prob_mrc)
                 mask_mrc_path = str(mask_mrc)
         elif args.save_mrc:
@@ -2721,6 +2740,17 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         default=True,
         help="Export per-micrograph probability and mask arrays. Enabled by default.",
+    )
+    infer.add_argument(
+        "--probability-dtype",
+        "--probability-output-dtype",
+        choices=("float16", "float32"),
+        default="float16",
+        help=(
+            "Storage dtype for exported probability .npy/.mrc maps. float16 is the "
+            "compact default; use float32 for legacy readers or full saved-map precision. "
+            "Binary .npy masks are always uint8 and binary .mrc masks are int8."
+        ),
     )
     infer.add_argument(
         "--no-export-masks",

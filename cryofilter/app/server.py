@@ -917,6 +917,10 @@ def _build_infer_spec(payload: dict[str, Any], *, work_dir: Path) -> JobSpec:
     _add_option(argv, "--particle-csg", payload.get("particle_csg"))
     _add_option(argv, "--pixel-size-angstrom", payload.get("pixel_size_angstrom"))
     _add_option(argv, "--inference-profile", payload.get("inference_profile"))
+    probability_dtype = _optional_str(payload.get("probability_dtype")) or "float16"
+    if probability_dtype not in {"float16", "float32"}:
+        raise ValueError("Probability dtype must be float16 or float32")
+    _add_option(argv, "--probability-dtype", probability_dtype)
     if _as_bool(payload.get("recursive"), default=True):
         argv.append("--recursive")
     if _as_bool(payload.get("skip_existing"), default=False):
@@ -982,6 +986,7 @@ def _build_infer_spec(payload: dict[str, Any], *, work_dir: Path) -> JobSpec:
             "num_gpus": payload.get("num_gpus"),
             "export_masks": export_masks,
             "binned_masks": binned_masks,
+            "probability_dtype": probability_dtype,
             "publish_cryosparc_job": publish_cryosparc_job,
             "run_typing": run_typing,
         },
@@ -1135,9 +1140,12 @@ def _build_cryosparc_predict_spec(payload: dict[str, Any], *, work_dir: Path) ->
     device = _optional_str(payload.get("device"))
     profile = _optional_str(payload.get("inference_profile"))
     batch_forward_size = _optional_str(payload.get("batch_forward_size"))
+    probability_dtype = _optional_str(payload.get("probability_dtype")) or "float16"
+    if probability_dtype not in {"float16", "float32"}:
+        raise ValueError("Probability dtype must be float16 or float32")
     export_masks = _as_bool(payload.get("export_masks"), default=True)
     binned_masks = _as_bool(payload.get("binned_masks"), default=False)
-    if device or profile or batch_forward_size or infer_args or not export_masks or binned_masks:
+    if device or profile or batch_forward_size or probability_dtype or infer_args or not export_masks or binned_masks:
         argv.append("--")
         if device:
             argv.extend(["--device", device])
@@ -1145,6 +1153,7 @@ def _build_cryosparc_predict_spec(payload: dict[str, Any], *, work_dir: Path) ->
             argv.extend(["--inference-profile", profile])
         if batch_forward_size:
             argv.extend(["--batch-forward-size", batch_forward_size])
+        argv.extend(["--probability-dtype", probability_dtype])
         if not export_masks:
             argv.append("--no-export-masks")
         if binned_masks:
@@ -1177,6 +1186,7 @@ def _build_cryosparc_predict_spec(payload: dict[str, Any], *, work_dir: Path) ->
             "num_gpus": payload.get("num_gpus"),
             "export_masks": export_masks,
             "binned_masks": binned_masks,
+            "probability_dtype": probability_dtype,
         },
         env=secret_env,
     )
@@ -2322,6 +2332,217 @@ class AppState:
                 continue
         return jobs
 
+    def import_cli_run(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Register a completed CLI inference directory with the app monitor."""
+
+        requested = _resolve_work_path(
+            _require_text(payload, "path"),
+            work_dir=self.work_dir,
+        )
+        if not requested.exists():
+            raise FileNotFoundError(f"CLI output path does not exist: {requested}")
+        artifact_root = requested.parent if requested.is_file() else requested
+        if requested.is_file() and requested.name != "inference_summary.json":
+            raise ValueError("CLI output file must be an inference_summary.json file")
+        summary_files = (
+            [requested]
+            if requested.is_file()
+            else _candidate_inference_summary_files([artifact_root])
+        )
+        if not summary_files:
+            raise FileNotFoundError(
+                "No inference_summary.json was found in the selected CLI output directory"
+            )
+        summary_file = summary_files[0].resolve()
+        summary = _load_json_object(summary_file)
+        inputs = summary.get("inputs")
+        image_count = len(inputs) if isinstance(inputs, list) else 0
+
+        job_id = uuid.uuid4().hex[:12]
+        job_dir = self.jobs_dir / job_id
+        job_dir.mkdir(parents=True, exist_ok=False)
+        log_path = job_dir / "job.log"
+        timestamp = utc_now()
+        title = _optional_str(payload.get("title")) or f"CLI run: {artifact_root.name}"
+        meta = {
+            "id": job_id,
+            "status": "succeeded",
+            "created_at": timestamp,
+            "started_at": timestamp,
+            "ended_at": timestamp,
+            "returncode": 0,
+            "work_dir": str(self.work_dir),
+            "log_file": str(log_path),
+            "cancel_requested": False,
+            "kind": "imported_cli",
+            "title": title,
+            "steps": [],
+            "artifact_roots": [str(artifact_root.resolve())],
+            "metadata": {
+                "imported": True,
+                "cli_output_path": str(artifact_root.resolve()),
+                "inference_summary": str(summary_file),
+                "image_count": image_count,
+            },
+        }
+        self._write_meta(job_id, meta)
+        self._append_log(
+            log_path,
+            "Imported completed CLI inference output into the Web UI monitor.\n"
+            f"Output: {artifact_root.resolve()}\n"
+            f"Summary: {summary_file}\n"
+            f"Images: {image_count}\n",
+        )
+        return meta
+
+    @staticmethod
+    def _summary_output_path(summary_file: Path, value: object) -> Path | None:
+        text = _optional_str(value)
+        if text is None:
+            return None
+        path = Path(text).expanduser()
+        if not path.is_absolute():
+            path = summary_file.parent / path
+        return path.resolve()
+
+    def _cli_preview_specs(self, meta: dict[str, Any]) -> list[dict[str, Any]]:
+        metadata = meta.get("metadata")
+        if not isinstance(metadata, dict) or not metadata.get("imported"):
+            return []
+        summary_text = _optional_str(metadata.get("inference_summary"))
+        if summary_text is None:
+            return []
+        summary_file = Path(summary_text).expanduser().resolve()
+        try:
+            summary = _load_json_object(summary_file)
+        except Exception:
+            return []
+        rows = summary.get("inputs")
+        if not isinstance(rows, list):
+            return []
+
+        previews: list[dict[str, Any]] = []
+        for index, row in enumerate(rows[:64]):
+            if len(previews) >= 16:
+                break
+            if not isinstance(row, dict):
+                continue
+            existing_png = self._summary_output_path(summary_file, row.get("output_diagnostic_png"))
+            if existing_png is not None and existing_png.is_file():
+                continue
+            source = self._summary_output_path(summary_file, row.get("input_mrc"))
+            probability = next(
+                (
+                    path
+                    for key in ("output_prob_npy", "output_prob_mrc")
+                    if (path := self._summary_output_path(summary_file, row.get(key))) is not None
+                    and path.is_file()
+                ),
+                None,
+            )
+            mask = next(
+                (
+                    path
+                    for key in ("output_mask_npy", "output_mask_mrc")
+                    if (path := self._summary_output_path(summary_file, row.get(key))) is not None
+                    and path.is_file()
+                ),
+                None,
+            )
+            if source is None or not source.is_file() or probability is None or mask is None:
+                continue
+            stem = source.stem or f"micrograph_{index + 1:06d}"
+            previews.append(
+                {
+                    "root_index": -1,
+                    "root": "generated CLI previews",
+                    "relative_path": f"CLI previews/{stem}_clean_filtering.png",
+                    "name": f"{stem}_clean_filtering.png",
+                    "suffix": ".png",
+                    "size": 0,
+                    "mtime": max(path.stat().st_mtime for path in (source, probability, mask)),
+                    "url": f"/api/jobs/{meta['id']}/cli-preview/{index}",
+                }
+            )
+        return previews
+
+    @staticmethod
+    def _load_cli_map(path: Path) -> Any:
+        import numpy as np
+
+        if path.suffix.lower() == ".npy":
+            array = np.load(path, mmap_mode="r")
+        else:
+            import mrcfile
+
+            with mrcfile.open(path, permissive=True) as handle:
+                array = np.asarray(handle.data).copy()
+        array = np.squeeze(np.asarray(array))
+        while array.ndim > 2:
+            array = np.squeeze(array[0])
+        if array.ndim != 2:
+            raise ValueError(f"Expected a 2D CLI map, got shape {array.shape}: {path}")
+        return array
+
+    def render_cli_preview(self, job_id: str, index: int) -> bytes:
+        meta = self.get_job(job_id)
+        metadata = meta.get("metadata")
+        if not isinstance(metadata, dict) or not metadata.get("imported"):
+            raise FileNotFoundError("This job is not an imported CLI run")
+        summary_text = _optional_str(metadata.get("inference_summary"))
+        if summary_text is None:
+            raise FileNotFoundError("Imported run has no inference summary")
+        summary_file = Path(summary_text).expanduser().resolve()
+        summary = _load_json_object(summary_file)
+        rows = summary.get("inputs")
+        if not isinstance(rows, list) or index < 0 or index >= len(rows):
+            raise IndexError("CLI preview index is out of range")
+        row = rows[index]
+        if not isinstance(row, dict):
+            raise ValueError("CLI inference summary row is invalid")
+
+        source = self._summary_output_path(summary_file, row.get("input_mrc"))
+        probability = next(
+            (
+                path
+                for key in ("output_prob_npy", "output_prob_mrc")
+                if (path := self._summary_output_path(summary_file, row.get(key))) is not None
+                and path.is_file()
+            ),
+            None,
+        )
+        mask = next(
+            (
+                path
+                for key in ("output_mask_npy", "output_mask_mrc")
+                if (path := self._summary_output_path(summary_file, row.get(key))) is not None
+                and path.is_file()
+            ),
+            None,
+        )
+        if source is None or not source.is_file() or probability is None or mask is None:
+            raise FileNotFoundError("CLI preview requires the source micrograph, probability map, and mask")
+
+        cache_file = self.jobs_dir / job_id / "cli_previews" / f"{index:06d}.png"
+        newest_input = max(path.stat().st_mtime for path in (source, probability, mask))
+        if cache_file.is_file() and cache_file.stat().st_mtime >= newest_input:
+            return cache_file.read_bytes()
+
+        with self.lock:
+            if cache_file.is_file() and cache_file.stat().st_mtime >= newest_input:
+                return cache_file.read_bytes()
+            from cryofilter.visualization import render_filtering_png
+
+            render_filtering_png(
+                image=browser_annotation.load_micrograph_array(source),
+                probability=self._load_cli_map(probability),
+                mask=self._load_cli_map(mask),
+                output_path=cache_file,
+                max_display_dim=1000,
+                dpi=120,
+            )
+        return cache_file.read_bytes()
+
     def get_job(self, job_id: str) -> dict[str, Any]:
         meta_path = self._meta_path(job_id)
         if not meta_path.exists():
@@ -2375,7 +2596,7 @@ class AppState:
     def list_artifacts(self, job_id: str) -> list[dict[str, Any]]:
         meta = self.get_job(job_id)
         roots = [Path(path).expanduser() for path in meta.get("artifact_roots", [])]
-        artifacts: list[dict[str, Any]] = []
+        artifacts: list[dict[str, Any]] = self._cli_preview_specs(meta)
         for root_index, root in enumerate(roots):
             if not root.exists():
                 continue
@@ -2667,6 +2888,12 @@ def make_handler(state: AppState) -> type[BaseHTTPRequestHandler]:
                         count = query.get("count", ["100"])[0]
                         self._send_json(state.live_summary(parts[2], mode=mode, count=count))
                         return
+                    if len(parts) == 5 and parts[3] == "cli-preview":
+                        self._send_bytes(
+                            state.render_cli_preview(parts[2], int(parts[4])),
+                            content_type="image/png",
+                        )
+                        return
                     if len(parts) >= 6 and parts[3] == "artifact":
                         rel = "/".join(parts[5:])
                         self._send_file(state.resolve_artifact(parts[2], int(parts[4]), rel))
@@ -2711,6 +2938,12 @@ def make_handler(state: AppState) -> type[BaseHTTPRequestHandler]:
                     if not isinstance(data, dict):
                         raise ValueError("payload must be a JSON object")
                     self._send_json(state.start_job(kind, data), status=HTTPStatus.CREATED)
+                    return
+                if path == "/api/jobs/import":
+                    self._send_json(
+                        state.import_cli_run(self._read_json()),
+                        status=HTTPStatus.CREATED,
+                    )
                     return
                 if path.startswith("/api/jobs/") and path.endswith("/cancel"):
                     parts = [unquote(part) for part in path.split("/") if part]

@@ -33,6 +33,7 @@ from cryofilter.cli import (
     _resolve_auto_batch_forward_size,
     _resolve_inference_devices,
     _run_multi_gpu_infer,
+    _save_mrc,
     _shard_mrc_paths,
     _write_typing_manifest,
 )
@@ -173,6 +174,7 @@ def test_infer_parser_aliases_and_safer_defaults() -> None:
     assert args.small_pixel_auto is True
     assert args.gpus == ""
     assert args.export_masks is True
+    assert args.probability_dtype == "float16"
     assert args.no_resample is False
     assert args.render_images is False
     assert args.image_output_dir is None
@@ -203,6 +205,7 @@ def test_infer_parser_aliases_and_safer_defaults() -> None:
     assert "four-panel PNG" in help_text
     assert "raw micrograph" in help_text
     assert "probability map" in help_text
+    assert "float16" in help_text
     assert "on-the-fly QC PNG" in help_text
     assert "OTF_images" in help_text
     particle_distance_action = next(
@@ -227,6 +230,29 @@ def test_infer_parser_aliases_and_safer_defaults() -> None:
 
     no_export = parser.parse_args(["infer", "--input-directory", "mic_dir", "--no-export-masks"])
     assert no_export.export_masks is False
+
+
+def test_compact_mrc_output_preserves_probability_and_binary_mask_dtypes(tmp_path: Path) -> None:
+    probability_path = tmp_path / "probability.mrc"
+    mask_path = tmp_path / "mask.mrc"
+
+    _save_mrc(
+        probability_path,
+        np.linspace(0.0, 1.0, 24, dtype=np.float16).reshape(4, 6),
+        1.25,
+    )
+    _save_mrc(
+        mask_path,
+        np.asarray([[0, 1, 0], [1, 1, 0]], dtype=np.int8),
+        1.25,
+    )
+
+    with mrcfile.open(probability_path, permissive=True) as handle:
+        assert handle.data.dtype == np.dtype("float16")
+        assert int(handle.header.mode) == 12
+    with mrcfile.open(mask_path, permissive=True) as handle:
+        assert handle.data.dtype == np.dtype("int8")
+        assert int(handle.header.mode) == 0
 
 
 def test_multi_gpu_parser_sharding_and_summary_order(tmp_path: Path, monkeypatch) -> None:

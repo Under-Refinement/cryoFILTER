@@ -86,7 +86,10 @@ The lowercase command is equivalent if preferred: `cryofilter app`.
   can also filter a CryoSPARC `.cs` or RELION `.star` file using pre-existing
   `<micrograph-stem>_mask.npy` files.
 - Monitor: live job list, command log, throughput metrics, and output artifact
-  previews.
+  previews. **Open CLI output** registers an already-completed CLI output
+  directory (or its `inference_summary.json`) without rerunning inference. The
+  app reads the full summary for charts and lazily generates up to 16 previews
+  when diagnostic PNGs were not saved by the CLI run.
 - Annotation: creates or resumes an annotation manifest from local
   motion-corrected micrographs, a CryoSPARC micrograph output, or a previous
   edited manifest, then opens a browser-native annotation canvas.

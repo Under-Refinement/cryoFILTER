@@ -134,6 +134,8 @@ The CryoSPARC form exposes **CPUs**, **Typing workers**, and **Typing updates**.
 
 **Mask generation:** Use Inference with a local micrograph path or a completed CryoSPARC micrograph output, weights, and an output directory. A CryoSPARC particle output is optional, so this can generate masks only. CryoSPARC-backed inference creates a live External Job by default, updates its progress and mask previews, and finishes with a connectable `micrographs` output plus a reusable mask index. Its default **Run typing** option publishes only typed five-panel previews (raw, mask, subtype, probability, and retained regions). With at least two requested GPUs, segmentation and incremental typing receive dedicated devices just like OTF; one-GPU runs type after segmentation.
 
+**Existing CLI runs:** In Monitor, choose **Open CLI output** and select a completed CLI output directory (or its `inference_summary.json`) to load its contamination charts and mask previews into the Web UI without rerunning inference.
+
 **Particle filtering:** Use Filter Picks when masks already exist and you want to filter new particle picks without rerunning inference. An Inference or OTF card plus a completed CryoSPARC particle job produces a new External Job with connectable accepted/rejected particle outputs; local mask and particle files remain supported.
 
 **OTF with motion correction:** On a machine with direct access to the CryoSPARC project, use **OTF** to follow a queued/running CryoSPARC 5 Patch Motion Correction job. One allocated GPU runs segmentation; two or more can run segmentation alone or split between segmentation and typing. In **Filter Picks**, select **CryoSPARC mask job** and enter the OTF card number to locate its masks automatically. See the [OTF workflow and test guide](docs/cryosparc/OTF.md).
@@ -149,6 +151,11 @@ Run inference on a directory:
 ```bash
 cryofilter infer --input /path/to/micrographs --output-dir ./cryofilter_output --recursive
 ```
+
+Probability maps use compact `float16` storage by default, binary `.npy` masks
+use `uint8`, and binary `.mrc` masks use `int8`. Use
+`--probability-dtype float32` for legacy readers, or `--no-save-mrc` to avoid
+writing duplicate MRC copies.
 
 Run inference and filter particles:
 

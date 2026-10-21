@@ -44,12 +44,19 @@ Required:
 Common output and resource flags:
 
 - `--output-dir`
+- `--probability-dtype float16|float32` (default: compact `float16`)
+- `--save-mrc` / `--no-save-mrc`
+- `--export-masks` / `--no-export-masks`
 - `--device`
 - `--gpus`
 - `--num-cpus`
 - `--num-gpus`
 - `--recursive`
 - `--skip-existing`
+
+Binary `.npy` masks are always `uint8`; binary `.mrc` masks are `int8`.
+Inference and thresholding remain float32 regardless of the selected saved-map
+dtype.
 
 Model and inference flags:
 

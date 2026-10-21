@@ -26,6 +26,12 @@ cryofilter infer \
 
 Default public inference uses the released FULL checkpoint, the balanced small-pixel policy, PSD frequency-band channels, `percentile_extra_wide` normalization, Tukey stitching, and threshold `0.60`.
 
+Exported probability maps use `float16` storage by default. Binary masks use
+`uint8` for `.npy` and `int8` for `.mrc`; inference, thresholding, and
+post-processing still run in float32. Use `--probability-dtype float32` for a
+legacy reader, `--no-save-mrc` to avoid duplicate MRC copies, or
+`--no-export-masks` when downstream work does not need the maps.
+
 Useful inference flags:
 
 ```bash

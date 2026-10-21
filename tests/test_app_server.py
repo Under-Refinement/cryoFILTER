@@ -371,6 +371,7 @@ def test_infer_job_spec_builds_cli_command(tmp_path: Path) -> None:
             "num_gpus": "1",
             "threshold": "0.6",
             "particle_file": "/data/particles.cs",
+            "probability_dtype": "float16",
             "binned_masks": True,
             "recursive": True,
             "render_overlays": True,
@@ -387,11 +388,13 @@ def test_infer_job_spec_builds_cli_command(tmp_path: Path) -> None:
     assert argv[argv.index("--num-gpus") + 1] == "1"
     assert "--recursive" in argv
     assert "--render-particle-overlays" in argv
+    assert argv[argv.index("--probability-dtype") + 1] == "float16"
     assert "--no-export-masks" not in argv
     assert "--no-resample" in argv
     assert "--batch-forward-size" in argv
     assert spec.metadata["export_masks"] is True
     assert spec.metadata["binned_masks"] is True
+    assert spec.metadata["probability_dtype"] == "float16"
     assert spec.artifact_roots == [tmp_path / "out"]
 
 
@@ -432,6 +435,89 @@ def test_infer_job_spec_can_disable_visible_mask_exports(tmp_path: Path) -> None
     assert _build_parser().parse_args(argv[3:]).render_images is False
     assert spec.metadata["export_masks"] is False
     assert spec.metadata["binned_masks"] is False
+
+
+def test_app_state_imports_completed_cli_run_for_monitoring(tmp_path: Path) -> None:
+    work_dir = tmp_path / "work"
+    output_dir = tmp_path / "cli_output"
+    output_dir.mkdir()
+    summary_file = output_dir / "inference_summary.json"
+    summary_file.write_text(
+        json.dumps(
+            {
+                "inputs": [
+                    {
+                        "input_mrc": "/data/mic_001.mrc",
+                        "output_image_shape": [10, 20],
+                        "mask_postprocessing": {"final_mask_pixels": 50},
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    state = AppState(work_dir)
+    imported = state.import_cli_run({"path": str(output_dir)})
+
+    assert imported["status"] == "succeeded"
+    assert imported["kind"] == "imported_cli"
+    assert imported["artifact_roots"] == [str(output_dir.resolve())]
+    assert imported["metadata"]["inference_summary"] == str(summary_file.resolve())
+    assert state.list_jobs()[0]["id"] == imported["id"]
+    live = state.live_summary(imported["id"])
+    assert live["available"] is True
+    assert live["n_images"] == 1
+    assert live["contamination_fraction"] == 0.25
+
+
+def test_imported_cli_run_builds_lazy_mask_preview(tmp_path: Path) -> None:
+    work_dir = tmp_path / "work"
+    output_dir = tmp_path / "cli_output"
+    output_dir.mkdir()
+    micrograph = output_dir / "mic_001.mrc"
+    probability = output_dir / "mic_001_prob.npy"
+    mask = output_dir / "mic_001_mask.npy"
+    with mrcfile.new(micrograph, overwrite=True) as handle:
+        handle.set_data(np.linspace(-1.0, 1.0, 80, dtype=np.float32).reshape(8, 10))
+    np.save(probability, np.linspace(0.0, 1.0, 80, dtype=np.float16).reshape(8, 10))
+    np.save(mask, np.asarray(np.indices((8, 10))[1] > 4, dtype=np.uint8))
+    (output_dir / "inference_summary.json").write_text(
+        json.dumps(
+            {
+                "inputs": [
+                    {
+                        "input_mrc": str(micrograph),
+                        "output_prob_npy": str(probability),
+                        "output_mask_npy": str(mask),
+                        "output_image_shape": [8, 10],
+                        "mask_postprocessing": {"final_mask_pixels": 40},
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    state = AppState(work_dir)
+    imported = state.import_cli_run({"path": str(output_dir)})
+    artifacts = state.list_artifacts(imported["id"])
+    preview = next(item for item in artifacts if item["relative_path"].startswith("CLI previews/"))
+
+    assert preview["url"].endswith("/cli-preview/0")
+    first = state.render_cli_preview(imported["id"], 0)
+    second = state.render_cli_preview(imported["id"], 0)
+    assert first.startswith(b"\x89PNG")
+    assert second == first
+
+
+def test_app_state_rejects_cli_directory_without_inference_summary(tmp_path: Path) -> None:
+    state = AppState(tmp_path / "work")
+    empty_output = tmp_path / "empty_output"
+    empty_output.mkdir()
+
+    with pytest.raises(FileNotFoundError, match="No inference_summary.json"):
+        state.import_cli_run({"path": str(empty_output)})
 
 
 def test_infer_job_spec_reports_missing_default_weights(tmp_path: Path) -> None:
@@ -662,6 +748,7 @@ def test_cryosparc_predict_job_spec_uses_typing_default(tmp_path: Path) -> None:
     assert "--" in argv
     assert argv[argv.index("--device") + 1] == "cuda"
     assert argv[argv.index("--inference-profile") + 1] == "balanced"
+    assert argv[argv.index("--probability-dtype") + 1] == "float16"
     assert "--no-export-masks" not in argv
     assert "--no-resample" not in argv[argv.index("--") + 1 :]
     assert spec.metadata["run_typing"] is True
@@ -669,6 +756,7 @@ def test_cryosparc_predict_job_spec_uses_typing_default(tmp_path: Path) -> None:
     assert spec.metadata["num_gpus"] == "1"
     assert spec.metadata["export_masks"] is True
     assert spec.metadata["binned_masks"] is False
+    assert spec.metadata["probability_dtype"] == "float16"
     assert spec.metadata["run_id"] == run_id
     assert spec.metadata["local_run_dir"] == tmp_path / "runs" / run_id
     assert spec.artifact_roots == [tmp_path / "runs" / run_id]

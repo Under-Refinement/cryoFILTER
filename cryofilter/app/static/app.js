@@ -2081,6 +2081,31 @@ async function loadJobs() {
   }
 }
 
+async function openCliRun() {
+  const rawPath = window.prompt(
+    "Enter a completed cryoFILTER CLI output directory or inference_summary.json path:",
+    "",
+  );
+  const path = String(rawPath || "").trim();
+  if (!path) return;
+  const button = $("#openCliRunButton");
+  if (button) button.disabled = true;
+  try {
+    const job = await api("/api/jobs/import", {
+      method: "POST",
+      body: JSON.stringify({ path }),
+    });
+    state.selected = job.id;
+    state.logOffset = null;
+    await loadJobs();
+    document.querySelector('[data-tab="monitor"]').click();
+  } catch (error) {
+    alert(error.message);
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
 async function selectJob(id) {
   state.selected = id;
   state.logOffset = null;
@@ -2528,6 +2553,7 @@ function bindControls() {
   updateOtfAllocation();
   updateFilterPicksSource();
   const cryosparcBox = $("#cryosparcConnectForm");
+  $("#openCliRunButton")?.addEventListener("click", openCliRun);
   if (cryosparcBox && cryosparcBox.dataset.connectBound !== "1") {
     $("#cryosparcConnectButton")?.addEventListener("click", async (event) => {
       event.preventDefault();
